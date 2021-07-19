@@ -76,7 +76,7 @@ async function defaultOnResolve(args: OnResolveArgs, {resolvedPath, error, watch
   if (resolvedPath !== null) {
     return {namespace: `pnp`, path: resolvedPath, watchFiles};
   } else {
-    return {external: true, ...mergeWith};
+    return {external: true, ...mergeWith, watchFiles};
   }
 }
 
