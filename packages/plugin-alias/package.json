@@ -41,7 +41,7 @@
   "aliases": {
     "foo": "bar some other stuff",
     "bar": "baz quux",
-    "baz": "echo"
+    "baz": "exec echo"
   },
   "stableVersion": "2.1.4"
 }

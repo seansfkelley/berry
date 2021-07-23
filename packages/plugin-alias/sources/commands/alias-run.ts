@@ -27,11 +27,10 @@ export default class AliasRunCommand extends BaseCommand {
 
   private async _delegateToRun(command: string) {
     // console.log(parseShell(command));
-    // TODO: this is super naive
+    // TODO: this is super naive; we should lay down some reasonable rules around parsing aliases
     const parts = command.split(` `);
     console.log(parts);
-    const foo = this.cli.process(parts);
-    return foo.validateAndExecute();
+    return this.cli.run(parts);
   }
 
   private async _resolve(commandSoFar: string, alias: string, aliases: Record<string, string>): Promise<number> {
