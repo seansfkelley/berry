@@ -4,11 +4,16 @@ import {scriptUtils, structUtils}           from '@yarnpkg/core';
 import {parseShell}                         from '@yarnpkg/parsers';
 import {Command, Option, Usage, UsageError} from 'clipanion';
 
+class Whatever extends Command {
+  aliasName = Option.String();
+  args = Option.Proxy();
+}
+
 // eslint-disable-next-line arca/no-default-export
 export default class AliasRunCommand extends BaseCommand {
   static paths = [
-    [`alias-run`],
-    [`alias`],
+    [`run`],
+    // [`alias`],
   ];
 
   static usage: Usage = Command.Usage({
@@ -28,6 +33,7 @@ export default class AliasRunCommand extends BaseCommand {
   private async _delegateToRun(command: string) {
     // console.log(parseShell(command));
     // TODO: this is super naive; we should lay down some reasonable rules around parsing aliases
+    const whatever = new Whatever().
     const parts = command.split(` `);
     console.log(parts);
     return this.cli.run(parts);
@@ -44,7 +50,31 @@ export default class AliasRunCommand extends BaseCommand {
     }
   }
 
+  /*
+  Instead of a dedicated command, this should be a best-effort optimization around nested Yarn
+  invocations.
+
+  It can hook into wrapScriptExecution, and inspect the script about to be run. It'll whitelist a
+  set of easy-to-parse constructs that cover common cases:
+
+  - yarn run other-script
+  - yarn run g:global-script --with-args
+  - yarn implicit-script --args "with quotes" ${AND_MAYBE_ENV_VARS}
+  - yarn install # (?!)
+
+  It'll bail and just run the script straight if it sees anything else, like && or ; or other shell
+  nonsense.
+
+  I'm not sure if it can handle cases that don't start with literally `yarn run` or if it should
+  even bother trying. But in theory it could work.
+
+  I don't think this code would even need to do its own recursive resolution; I think it could
+  handle only the immediate alias invocation, and if it uses `this.cli.run`, all the parsing will
+  happen in-process and the hook might end up being called again! That also means that it doesn't
+  need to reimplement things like globally:locatable:scripts.
+  */
   async execute() {
+    console.log(`here!`);
     const configuration = await Configuration.find(this.context.cwd, this.context.plugins);
     const {project, workspace, locator} = await Project.find(configuration, this.context.cwd);
 
