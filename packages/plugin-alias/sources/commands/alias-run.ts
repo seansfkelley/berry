@@ -1,13 +1,14 @@
 import {BaseCommand, pluginCommands}        from '@yarnpkg/cli';
 import {Configuration, Project, Workspace}  from '@yarnpkg/core';
 import {scriptUtils, structUtils}           from '@yarnpkg/core';
+import {parseShell}                         from '@yarnpkg/parsers';
 import {Command, Option, Usage, UsageError} from 'clipanion';
 
 // eslint-disable-next-line arca/no-default-export
 export default class AliasRunCommand extends BaseCommand {
   static paths = [
-    [`alias-run`,
-      `alias`],
+    [`alias-run`],
+    [`alias`],
   ];
 
   static usage: Usage = Command.Usage({
@@ -24,17 +25,36 @@ export default class AliasRunCommand extends BaseCommand {
   aliasName = Option.String();
   args = Option.Proxy();
 
+  private async _delegateToRun(command: string) {
+    // console.log(parseShell(command));
+    // TODO: this is super naive
+    const parts = command.split(` `);
+    console.log(parts);
+    const foo = this.cli.process(parts);
+    return foo.validateAndExecute();
+  }
+
+  private async _resolve(commandSoFar: string, alias: string, aliases: Record<string, string>): Promise<number> {
+    const next = aliases[alias];
+    if (next == null) {
+      return this._delegateToRun(`${alias} ${commandSoFar}`);
+    } else {
+      const [nextAlias, ...extraParts] = next.split(` `);
+      // TODO: check for infinite recursion
+      return this._resolve(`${extraParts.join(` `)} ${commandSoFar}`, nextAlias, aliases);
+    }
+  }
+
   async execute() {
     const configuration = await Configuration.find(this.context.cwd, this.context.plugins);
     const {project, workspace, locator} = await Project.find(configuration, this.context.cwd);
 
-    console.log((workspace?.manifest as any).aliases);
-
-    return 0;
-
-    await project.restoreInstallState();
+    const aliases = workspace?.manifest.raw.aliases ?? {};
+    return this._resolve(``, this.aliasName, aliases);
 
     /*
+    await project.restoreInstallState();
+
     const effectiveLocator = this.topLevel
       ? project.topLevelWorkspace.anchoredLocator
       : locator;

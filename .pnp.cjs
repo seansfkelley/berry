@@ -10591,7 +10591,7 @@ function $$SETUP_STATE(hydrateRuntimeState, basePath) {
             ["@yarnpkg/core", "workspace:packages/yarnpkg-core"],
             ["@yarnpkg/fslib", "workspace:packages/yarnpkg-fslib"],
             ["@yarnpkg/json-proxy", "workspace:packages/yarnpkg-json-proxy"],
-            ["@yarnpkg/shell", "workspace:packages/yarnpkg-shell"],
+            ["@yarnpkg/parsers", "workspace:packages/yarnpkg-parsers"],
             ["clipanion", "virtual:02f08ef8b8f3af06d08a146e8941d7fef41abbe0f441d85250a110dd2773e679dff502bd7763f42309743e1ddb33847a4bc3aab82132068c9954ae25f4c4bce5#npm:3.0.1"],
             ["tslib", "npm:1.13.0"]
           ],
