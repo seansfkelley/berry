@@ -26,7 +26,9 @@
   },
   "scripts": {
     "postpack": "rm -rf lib",
-    "prepack": "run build:compile \"$(pwd)\""
+    "prepack": "run build:compile \"$(pwd)\"",
+    "foo": "yarn run bar --some 'other stuff'",
+    "bar": "yarn run global:echo"
   },
   "publishConfig": {
     "main": "./lib/index.js",
@@ -37,11 +39,6 @@
   ],
   "engines": {
     "node": ">=12 <14 || 14.2 - 14.9 || >14.10.0"
-  },
-  "aliases": {
-    "foo": "bar some other stuff",
-    "bar": "baz quux",
-    "baz": "exec echo"
   },
   "stableVersion": "2.1.4"
 }

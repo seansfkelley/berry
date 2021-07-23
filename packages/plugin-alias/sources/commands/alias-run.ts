@@ -4,16 +4,10 @@ import {scriptUtils, structUtils}           from '@yarnpkg/core';
 import {parseShell}                         from '@yarnpkg/parsers';
 import {Command, Option, Usage, UsageError} from 'clipanion';
 
-class Whatever extends Command {
-  aliasName = Option.String();
-  args = Option.Proxy();
-}
-
 // eslint-disable-next-line arca/no-default-export
 export default class AliasRunCommand extends BaseCommand {
   static paths = [
-    [`run`],
-    // [`alias`],
+    [`alias`],
   ];
 
   static usage: Usage = Command.Usage({
@@ -33,7 +27,6 @@ export default class AliasRunCommand extends BaseCommand {
   private async _delegateToRun(command: string) {
     // console.log(parseShell(command));
     // TODO: this is super naive; we should lay down some reasonable rules around parsing aliases
-    const whatever = new Whatever().
     const parts = command.split(` `);
     console.log(parts);
     return this.cli.run(parts);
