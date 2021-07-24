@@ -62,7 +62,7 @@ const WHITESPACE = /[ \t]/;
 const SIMPLE_CHARACTERS_OR_WHITESPACE = /^[.\-a-zA-Z0-9_/: \t]+/;
 
 
-function parseArgs(scriptText: string) {
+export function parseArgs(scriptText: string) {
   const args = [];
   let remainingText = scriptText.trimLeft();
 

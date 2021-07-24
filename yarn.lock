@@ -5614,24 +5614,6 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@yarnpkg/plugin-alias@workspace:packages/plugin-alias":
-  version: 0.0.0-use.local
-  resolution: "@yarnpkg/plugin-alias@workspace:packages/plugin-alias"
-  dependencies:
-    "@yarnpkg/cli": "workspace:*"
-    "@yarnpkg/core": "workspace:*"
-    "@yarnpkg/fslib": "workspace:^2.5.0-rc.12"
-    "@yarnpkg/json-proxy": "workspace:^2.1.1-rc.10"
-    "@yarnpkg/parsers": "workspace:*"
-    clipanion: ^3.0.1
-    tslib: ^1.13.0
-  peerDependencies:
-    "@yarnpkg/cli": ^3.0.0-rc.12
-    "@yarnpkg/core": ^3.0.0-rc.12
-    "@yarnpkg/parsers": ^3.0.0-rc.12
-  languageName: unknown
-  linkType: soft
-
 "@yarnpkg/plugin-compat@workspace:^3.0.0-rc.12, @yarnpkg/plugin-compat@workspace:packages/plugin-compat":
   version: 0.0.0-use.local
   resolution: "@yarnpkg/plugin-compat@workspace:packages/plugin-compat"
@@ -5963,6 +5945,24 @@ __metadata:
   peerDependencies:
     "@yarnpkg/cli": ^3.0.0-rc.12
     "@yarnpkg/core": ^3.0.0-rc.12
+  languageName: unknown
+  linkType: soft
+
+"@yarnpkg/plugin-run-inline@workspace:packages/plugin-run-inline":
+  version: 0.0.0-use.local
+  resolution: "@yarnpkg/plugin-run-inline@workspace:packages/plugin-run-inline"
+  dependencies:
+    "@yarnpkg/cli": "workspace:*"
+    "@yarnpkg/core": "workspace:*"
+    "@yarnpkg/fslib": "workspace:^2.5.0-rc.12"
+    "@yarnpkg/json-proxy": "workspace:^2.1.1-rc.10"
+    "@yarnpkg/parsers": "workspace:*"
+    clipanion: ^3.0.1
+    tslib: ^1.13.0
+  peerDependencies:
+    "@yarnpkg/cli": ^3.0.0-rc.12
+    "@yarnpkg/core": ^3.0.0-rc.12
+    "@yarnpkg/parsers": ^3.0.0-rc.12
   languageName: unknown
   linkType: soft
 
