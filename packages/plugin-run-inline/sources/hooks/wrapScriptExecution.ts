@@ -11,9 +11,12 @@ export const wrapScriptExecution: Hooks["wrapScriptExecution"] = async (
   scriptName: string,
   extra: {script: string, args: Array<string>, cwd: PortablePath, env: ProcessEnvironment, stdin: Readable | null, stdout: Writable, stderr: Writable},
 ): Promise<() => Promise<number>> => {
+  if (extra.env.CI || extra.env.DONT_INLINE_RECURSIVE_YARN)
+    return executor;
+
   const workspace = project.workspacesByIdent.get(locator.identHash);
-  if (!workspace)
-    throw new Error(`uh oh`);
+  if (!workspace) // I dunno what this even means or if it's even possible.
+    return executor;
 
   console.log();
   console.log(`hooking script, parameters:`);
@@ -54,21 +57,42 @@ export const wrapScriptExecution: Hooks["wrapScriptExecution"] = async (
   return executor;
 };
 
+const SIMPLE_CHARACTERS = /^[.\-a-zA-Z0-9_/:]+/;
+const WHITESPACE = /[ \t]/;
+const SIMPLE_CHARACTERS_OR_WHITESPACE = /^[.\-a-zA-Z0-9_/: \t]+/;
+
+
 function parseArgs(scriptText: string) {
   const args = [];
+  let remainingText = scriptText.trimLeft();
 
-  for (let i = 0; i < scriptText.length; ++i)
-    const c = scriptText[i];
-    // define: simple character = [\.\-a-zA-Z0-9_/:]
-    // simple characters can't do fancy shell things like conditionals or env vars or whatever
-    // scan until we find non-whitespace
-    // if simple character, match simple characters until we can't
-    // if next character is whitespace, call that an arg and restart the process
-    // else, bail
-    // if single (or double) quote, match simple characters OR whitespace until we can't
-    // if next character is single (or double) quote, call that an arg and restart the process
-    // else, bail
+  while (remainingText.length > 0) {
+    const match = SIMPLE_CHARACTERS.exec(remainingText);
+    if (match) {
+      const possibleArg = match[0];
+      if (WHITESPACE.test(remainingText[possibleArg.length])) {
+        args.push(match[0]);
+        remainingText = remainingText.slice(match.length).trimLeft();
+        continue;
+      }
+      return undefined;
+    }
 
+    const c = remainingText[0];
+    if (c === `'` || c === `"`) {
+      match = SIMPLE_CHARACTERS_OR_WHITESPACE.exec(remainingText.slice(1));
+      if (match) {
+        const possibleArg = match[0];
+        if (remainingText[possibleArg.length + 1] === c && WHITESPACE.test(remainingText[possibleArg.length + 2])) {
+          args.push(match[0]);
+          remainingText = remainingText.slice(possibleArg.length + 1).trimLeft();
+        }
+      }
+      return undefined;
+    }
 
-  return scriptText.split(` `);
+    return undefined;
+  }
+
+  return args;
 }

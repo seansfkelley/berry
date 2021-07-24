@@ -1,5 +1,5 @@
 {
-  "name": "@yarnpkg/plugin-alias",
+  "name": "@yarnpkg/plugin-run-inline",
   "version": "3.0.0-rc.12",
   "license": "BSD-2-Clause",
   "main": "./sources/index.ts",
