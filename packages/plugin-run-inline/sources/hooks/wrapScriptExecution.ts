@@ -24,7 +24,7 @@ export const wrapScriptExecution: Hooks["wrapScriptExecution"] = async (
   console.log(`args`, JSON.stringify(extra.args));
   console.log(`cwd`, JSON.stringify(extra.cwd));
 
-  const parsedArgs = parseArgs(extra.script);
+  const parsedArgs = _parseCommandString(extra.script);
   if (parsedArgs && parsedArgs[0] === `yarn` && parsedArgs[1] === `run`) {
     const [scriptName, ...restArgs] = parsedArgs.slice(2);
     const args = [...restArgs, ...extra.args];
@@ -60,42 +60,56 @@ export const wrapScriptExecution: Hooks["wrapScriptExecution"] = async (
 const SHELL_SAFE_CHARACTERS = `-.,a-zA-Z0-9_/:=`;
 const UNQUOTED_CHARACTERS = new RegExp(`^[${SHELL_SAFE_CHARACTERS}]+`);
 const DOUBLE_QUOTED_CHARACTERS = new RegExp(`^[${SHELL_SAFE_CHARACTERS}\t ']+`);
-const SINGLE_QUOTED_CHARACTERS = new RegExp(`^[${SHELL_SAFE_CHARACTERS}\t ()[\\]{};$*+"]+`);
+const SINGLE_QUOTED_CHARACTERS = new RegExp(`^[${SHELL_SAFE_CHARACTERS}\t ()[\\]{};$*+|&"]+`);
 
-export function parseArgs(scriptText: string) {
+/**
+ * Exported for testing.
+ *
+ * Try to parse out the provided shell command string into, basically, a list of argv. This function
+ * supports a small subset of legal shell syntax that can be safely and unambiguously parsed and
+ * does not require a shell or environment to resolve. Quoting is supported. Enviroment variables,
+ * control flow and subshells are not.
+ *
+ * The intent of this function is to parse out a command to see if it's a candidate for best-effort
+ * inlining. This means that some complex constructs that are technically legal in that they are
+ * unambiguous and don't require a shell, such as a lone double-quoted parenthesis, are not
+ * supported due to the complexity/potential for bugs that parsing them would introduce and the
+ * rarity with which they appear.
+ */
+export function _parseCommandString(command: string) {
   const args = [];
-  let remainingText = scriptText.trim();
+  let remaining = command.trim();
 
   function isArgumentTerminator(index: number) {
-    return index >= remainingText.length || ` \t`.includes(remainingText[index]);
+    return index >= remaining.length || ` \t`.includes(remaining[index]);
   }
 
-  while (remainingText.length > 0) {
-    let match = UNQUOTED_CHARACTERS.exec(remainingText);
+  while (remaining.length > 0) {
+    let match = UNQUOTED_CHARACTERS.exec(remaining);
     if (match) {
       const possibleArg = match[0];
       if (isArgumentTerminator(possibleArg.length)) {
         args.push(match[0]);
-        remainingText = remainingText.slice(possibleArg.length).trimLeft();
+        remaining = remaining.slice(possibleArg.length).trimLeft();
         continue;
       }
       return undefined;
     }
 
-    const c = remainingText[0];
-    remainingText = remainingText.slice(1);
+    const c = remaining[0];
+    remaining = remaining.slice(1);
     if (c === `'`)
-      match = SINGLE_QUOTED_CHARACTERS.exec(remainingText);
+      match = SINGLE_QUOTED_CHARACTERS.exec(remaining);
     else if (c === `"`)
-      match = DOUBLE_QUOTED_CHARACTERS.exec(remainingText);
+      match = DOUBLE_QUOTED_CHARACTERS.exec(remaining);
     else
       return undefined;
 
     if (match) {
       const possibleArg = match[0];
-      if (remainingText[possibleArg.length] === c && isArgumentTerminator(possibleArg.length + 1)) {
+      if (remaining[possibleArg.length] === c && isArgumentTerminator(possibleArg.length + 1)) {
         args.push(match[0]);
-        remainingText = remainingText.slice(possibleArg.length + 1).trimLeft();
+        remaining = remaining.slice(possibleArg.length + 1).trimLeft();
         continue;
       }
     }

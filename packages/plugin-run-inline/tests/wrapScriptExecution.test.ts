@@ -1,10 +1,10 @@
-import {wrapScriptExecution, parseArgs} from "../sources/hooks/wrapScriptExecution";
+import {wrapScriptExecution, _parseCommandString} from "../sources/hooks/wrapScriptExecution";
 
 describe(`wrapScriptExecution`, () => {
 
 });
 
-describe(`parseArgs`, () => {
+describe(`_parseCommandString`, () => {
   it.each([
     [`well-formatted positional args`, `yarn run script`, [`yarn`, `run`, `script`]],
     [`positional args with extraneous whitespace`, ` \tyarn \t run\t\t script    `, [`yarn`, `run`, `script`]],
@@ -16,7 +16,7 @@ describe(`parseArgs`, () => {
     [`single-quoted strings containing double quotes`, `'foo " bar " baz'`, [`foo " bar " baz`]],
     [`double-quoted strings containing single quotes`, `"foo ' bar ' baz"`, [`foo ' bar ' baz`]],
   ])(`should parse %s`, (_, given, expected) => {
-    expect(parseArgs(given)).toEqual(expected);
+    expect(_parseCommandString(given)).toEqual(expected);
   });
 
   it.each([
@@ -27,18 +27,20 @@ describe(`parseArgs`, () => {
     [`asterisks`, `*.splat`],
     [`plus signs`, `+`],
     [`semicolons`, `first ; second`],
+    [`ampersands`, `and && and`],
+    [`pipes`, `or || or`],
   ])(`should parse %s in single quotes, but not raw or in double quotes`, (_, given) => {
-    expect(parseArgs(given)).toBeUndefined();
-    expect(parseArgs(`"${given}"`)).toBeUndefined();
-    expect(parseArgs(`'${given}'`)).toEqual([given]);
+    expect(_parseCommandString(given)).toBeUndefined();
+    expect(_parseCommandString(`"${given}"`)).toBeUndefined();
+    expect(_parseCommandString(`'${given}'`)).toEqual([given]);
   });
 
   it.each([
     [`backslashes`, `\\`],
   ])(`should not parse %s, either raw or in single or double quotes`, (_, given) => {
-    expect(parseArgs(given)).toBeUndefined();
-    expect(parseArgs(`"${given}"`)).toBeUndefined();
-    expect(parseArgs(`'${given}'`)).toBeUndefined();
+    expect(_parseCommandString(given)).toBeUndefined();
+    expect(_parseCommandString(`"${given}"`)).toBeUndefined();
+    expect(_parseCommandString(`'${given}'`)).toBeUndefined();
   });
 
   it.each([
@@ -51,6 +53,6 @@ describe(`parseArgs`, () => {
     [`a single-quoted string interrupted by an escaped single quote`, `'foo'"'"'bar'`],
     [`a double-quoted string interrupted by an escaped double quote`, `"foo"'"'"bar"`],
   ])(`should not parse %s`, (_, given) => {
-    expect(parseArgs(given)).toBeUndefined();
+    expect(_parseCommandString(given)).toBeUndefined();
   });
 });
