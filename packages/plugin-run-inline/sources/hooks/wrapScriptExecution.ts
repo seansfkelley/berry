@@ -57,38 +57,47 @@ export const wrapScriptExecution: Hooks["wrapScriptExecution"] = async (
   return executor;
 };
 
-const SIMPLE_CHARACTERS = /^[.\-a-zA-Z0-9_/:]+/;
-const WHITESPACE = /[ \t]/;
-const SIMPLE_CHARACTERS_OR_WHITESPACE = /^[.\-a-zA-Z0-9_/: \t]+/;
-
+const SHELL_SAFE_CHARACTERS = `-.,a-zA-Z0-9_/:=`;
+const UNQUOTED_CHARACTERS = new RegExp(`^[${SHELL_SAFE_CHARACTERS}]+`);
+const DOUBLE_QUOTED_CHARACTERS = new RegExp(`^[${SHELL_SAFE_CHARACTERS}\t ']+`);
+const SINGLE_QUOTED_CHARACTERS = new RegExp(`^[${SHELL_SAFE_CHARACTERS}\t ()[\\]{};$*+"]+`);
 
 export function parseArgs(scriptText: string) {
   const args = [];
-  let remainingText = scriptText.trimLeft();
+  let remainingText = scriptText.trim();
+
+  function isArgumentTerminator(index: number) {
+    return index >= remainingText.length || ` \t`.includes(remainingText[index]);
+  }
 
   while (remainingText.length > 0) {
-    const match = SIMPLE_CHARACTERS.exec(remainingText);
+    let match = UNQUOTED_CHARACTERS.exec(remainingText);
     if (match) {
       const possibleArg = match[0];
-      if (WHITESPACE.test(remainingText[possibleArg.length])) {
+      if (isArgumentTerminator(possibleArg.length)) {
         args.push(match[0]);
-        remainingText = remainingText.slice(match.length).trimLeft();
+        remainingText = remainingText.slice(possibleArg.length).trimLeft();
         continue;
       }
       return undefined;
     }
 
     const c = remainingText[0];
-    if (c === `'` || c === `"`) {
-      match = SIMPLE_CHARACTERS_OR_WHITESPACE.exec(remainingText.slice(1));
-      if (match) {
-        const possibleArg = match[0];
-        if (remainingText[possibleArg.length + 1] === c && WHITESPACE.test(remainingText[possibleArg.length + 2])) {
-          args.push(match[0]);
-          remainingText = remainingText.slice(possibleArg.length + 1).trimLeft();
-        }
-      }
+    remainingText = remainingText.slice(1);
+    if (c === `'`)
+      match = SINGLE_QUOTED_CHARACTERS.exec(remainingText);
+    else if (c === `"`)
+      match = DOUBLE_QUOTED_CHARACTERS.exec(remainingText);
+    else
       return undefined;
+
+    if (match) {
+      const possibleArg = match[0];
+      if (remainingText[possibleArg.length] === c && isArgumentTerminator(possibleArg.length + 1)) {
+        args.push(match[0]);
+        remainingText = remainingText.slice(possibleArg.length + 1).trimLeft();
+        continue;
+      }
     }
 
     return undefined;
