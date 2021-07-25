@@ -29,7 +29,31 @@ export const wrapScriptExecution: Required<Hooks>["wrapScriptExecution"] = async
     if (workspace.manifest.scripts.has(scriptName)) {
       // console.log(`will execute package-local script ${scriptName} with`, args);
       return () => {
-        // TODO: should we be concerned about things like INIT_CWD or other things we're not explicitly emulating when inlining?
+        // TODO: should we be concerned about things like INIT_CWD or other things we're not
+        // explicitly emulating when inlining?
+        //
+        // INIT_CWD appears to only be set when the script environment is first initialized for a
+        // workspace. I don't think it's persisted to the workspace object or anything, though. This
+        // means that if we hop around between nested runs within a workspace (or between, with
+        // globals, but we don't need the additional complexity) that the script that it finally
+        // bottoms out on -- the one that is actually executed by the default executor -- might not
+        // receive the INIT_CWD it was expecting. In particular, if you have a script that is _only_
+        // ever wrapped by other scripts, there would be a behavioral difference between not using
+        // this plugin (wrapped script sees INIT == WORKSPACE) and using it (wrapped script is
+        // unwrapped and sees INIT == wherever the user's shell was).
+        //
+        // It doesn't look like we can override INIT_CWD though. It's unconditionally set in the
+        // initialization code that is run by executePackageScript. We hand off execution to that
+        // method -- we don't introspect into how it does its job. And it's set to a fixed value
+        // computed at process start time, rather than, say, from a parameter. So I think we just
+        // have to document that it isn't a reliable value.
+        //
+        // Maybe the plugin can be configured to warn if it spots INIT_CWD in any scripts in your
+        // workspace?
+        //
+        // Relatedly: should I file a ticket to get WORKSPACE_CWD injected into the environment?
+        // Seems weird that there's INIT and PROJECT but not that one. I also think that WORKSPACE
+        // is far more useful and more reliable the way we want to use wrapping.
         return scriptUtils.executePackageScript(locator, scriptName, args, {
           project,
           stdin: extra.stdin,

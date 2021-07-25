@@ -27,6 +27,7 @@ describe(`wrapScriptExecution`, () => {
 
   // TODO: Move all these fixtures into a fixture directory or whatever.
   // TODO: These should probably be created afresh in each test...
+  // TODO: We can make actual workspace on disk and use them as fixtures!
   const env: ProcessEnvironment = {};
   const stdin = Symbol(`stdin`) as unknown as Readable;
   const stdout = Symbol(`stdout`) as unknown as Writable;
@@ -54,27 +55,8 @@ describe(`wrapScriptExecution`, () => {
     reference: `2`,
   };
 
-  (thisWorkspace as UnReadonly<typeof thisWorkspace>).locator = thisLocator;
-  (otherWorkspace as UnReadonly<typeof otherWorkspace>).locator = otherLocator;
-
   project.workspacesByIdent.set(thisLocator.identHash, thisWorkspace);
   project.workspacesByIdent.set(otherLocator.identHash, otherWorkspace);
-
-  (thisWorkspace as UnReadonly<typeof thisWorkspace>).manifest = new Manifest();
-  // TODO: There should be a lot more test cases with flags and stuff.
-  thisWorkspace.manifest.scripts = new Map([
-    [`local-script`, `this is the local script`],
-    [`yarn-run-local-script-explicit`, `yarn run local-script`],
-    [`yarn-run-local-script-implicit`, `yarn local-script`],
-    [`yarn-run-unknown-script`, `yarn run unknown-script`],
-    [`yarn-run-global-script`, `yarn run global:script`],
-    [`yarn-exec-echo`, `yarn exec echo`],
-  ]);
-
-  (otherWorkspace as UnReadonly<typeof otherWorkspace>).manifest = new Manifest();
-  otherWorkspace.manifest.scripts = new Map([
-    [`global:script`, `this is the global script`],
-  ]);
 
   afterAll(() => {
     jest.unmock(`@yarnpkg/core`);
@@ -83,6 +65,9 @@ describe(`wrapScriptExecution`, () => {
   beforeEach(() => {
     scriptUtils.executePackageScript.mockReset();
     scriptUtils.executeWorkspaceScript.mockReset();
+
+    (thisWorkspace as UnReadonly<typeof thisWorkspace>).manifest = new Manifest();
+    (otherWorkspace as UnReadonly<typeof otherWorkspace>).manifest = new Manifest();
   });
 
   function executeHook(
@@ -106,49 +91,95 @@ describe(`wrapScriptExecution`, () => {
     );
   }
 
-  describe(`should return the default executor`, () => {
-    test(`when running a script that is neither local nor global`, async () => {
-      const scriptName = `yarn-run-unknown-script`;
-      const executor = await executeHook(scriptName);
+  async function runExecutorAndAssert(executor: () => Promise<number>, which: Function, expectedArgs: Array<unknown>) {
+    // sanity-check the helper function!
+    expect([scriptUtils.executePackageScript, scriptUtils.executeWorkspaceScript]).toContain(which);
+    expect(executor).not.toBe(defaultExecutor);
+    await executor();
+    expect(which).toBeCalledTimes(1);
+    expect(which).toHaveBeenLastCalledWith(...expectedArgs);
+  }
 
-      expect(executor).toBe(defaultExecutor);
+  describe(`should return the default executor`, () => {
+    test(`when trying to run a script that does not start with yarn`, async () => {
+      thisWorkspace.manifest.scripts = new Map([
+        [`script`, `notyarn run another:script`],
+      ]);
+
+      expect(await executeHook(`script`)).toBe(defaultExecutor);
+    });
+
+    // TODO: Do we want to this executePackageScript instead?
+    test(`when running a script that implicitly wraps a local script`, async () => {
+      thisWorkspace.manifest.scripts = new Map([
+        [`local-script`, `this is the local script`],
+        [`wrapper-script`, `yarn local-script`],
+      ]);
+
+      expect(await executeHook(`wrapper-script`)).toBe(defaultExecutor);
+    });
+
+    test(`when trying to run a global script whose name does not contain a colon`, async () => {
+      thisWorkspace.manifest.scripts = new Map([
+        [`wrapper-script`, `yarn run not-actually-a-global-script`],
+      ]);
+      otherWorkspace.manifest.scripts = new Map([
+        [`not-actually-a-global-script`, `this is the global script`],
+      ]);
+
+      expect(await executeHook(`wrapper-script`)).toBe(defaultExecutor);
+    });
+
+    test(`when trying to run a global script that has multiple other definitions`, async () => {
+      thisWorkspace.manifest.scripts = new Map([
+        [`wrapper-script`, `yarn run global:script`],
+      ]);
+      otherWorkspace.manifest.scripts = new Map([
+        [`global:script`, `this is the global script`],
+      ]);
+      // TODO: A third workspace!
+
+      expect(await executeHook(`wrapper-script`)).toBe(defaultExecutor);
     });
   });
 
   describe(`should return an executor that wraps executePackageScript`, () => {
-    test(`when running a script that wraps a local script`, async () => {
-      const scriptName = `yarn-run-local-script-explicit`;
-      const executor = await executeHook(scriptName);
+    test(`when running a script that explicitly wraps a local script`, async () => {
+      thisWorkspace.manifest.scripts = new Map([
+        [`local-script`, `this is the local script`],
+        [`wrapper-script`, `yarn run local-script`],
+      ]);
 
-      expect(executor).not.toBe(defaultExecutor);
-
-      await executor();
-
-      expect(scriptUtils.executePackageScript).toBeCalledTimes(1);
-      expect(scriptUtils.executePackageScript).toHaveBeenLastCalledWith(
-        thisLocator,
-        `local-script`,
-        [],
-        {project, stdin, stdout, stderr},
+      await runExecutorAndAssert(
+        await executeHook(`wrapper-script`),
+        scriptUtils.executePackageScript, [
+          thisLocator,
+          `local-script`,
+          [],
+          {project, stdin, stdout, stderr},
+        ],
       );
     });
   });
 
   describe(`should return an executor that wraps executeWorkspaceScript`, () => {
-    test(`when running a script that wraps a global script`, async () => {
-      const scriptName = `yarn-run-global-script`;
-      const executor = await executeHook(scriptName);
+    test(`when running a script that wraps a global script whose name includes a colon`, async () => {
+      thisWorkspace.manifest.scripts = new Map([
+        [`wrapper-script`, `yarn run global:script`],
+      ]);
+      otherWorkspace.manifest.scripts = new Map([
+        [`global:script`, `this is the global script`],
+      ]);
 
-      expect(executor).not.toBe(defaultExecutor);
-
-      await executor();
-
-      expect(scriptUtils.executeWorkspaceScript).toBeCalledTimes(1);
-      expect(scriptUtils.executeWorkspaceScript).toHaveBeenLastCalledWith(
-        otherWorkspace,
-        `global:script`,
-        [],
-        {stdin, stdout, stderr},
+      await runExecutorAndAssert(
+        await executeHook(`wrapper-script`),
+        scriptUtils.executeWorkspaceScript,
+        [
+          otherWorkspace,
+          `global:script`,
+          [],
+          {stdin, stdout, stderr},
+        ],
       );
     });
   });
