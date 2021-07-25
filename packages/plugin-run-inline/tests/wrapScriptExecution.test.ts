@@ -88,6 +88,31 @@ describe(`wrapScriptExecution`, () => {
     expect(which).toHaveBeenLastCalledWith(...expectedArgs);
   }
 
+  /*
+  TODO: tests for INIT_CWD behavior.
+
+  INIT_CWD appears to only be set when the script environment is first initialized for a workspace.
+  I don't think it's persisted to the workspace object or anything, though. This means that if we
+  hop around between nested runs within a workspace (or between, with globals, but we don't need the
+  additional complexity) that the script that it finally bottoms out on -- the one that is actually
+  executed by the default executor -- might not receive the INIT_CWD it was expecting. In
+  particular, if you have a script that is _only_ ever wrapped by other scripts, there would be a
+  behavioral difference between not using this plugin (wrapped script sees INIT == WORKSPACE) and
+  using it (wrapped script is unwrapped and sees INIT == wherever the user's shell was).
+
+  It doesn't look like we can override INIT_CWD though. It's unconditionally set in the
+  initialization code that is run by executePackageScript. We hand off execution to that method --
+  we don't introspect into how it does its job. And it's set to a fixed value computed at process
+  start time, rather than, say, from a parameter. So I think we just have to document that it isn't
+  a reliable value.
+
+  Maybe the plugin can be configured to warn if it spots INIT_CWD in any scripts in your workspace?
+
+  Relatedly: should I file a ticket to get WORKSPACE_CWD injected into the environment? Seems weird
+  that there's INIT and PROJECT but not that one. I also think that WORKSPACE is far more useful and
+  more reliable the way we want to use wrapping.
+  */
+
   describe(`should return the default executor`, () => {
     test(`when trying to run a script that does not start with yarn`, async () => {
       primaryWorkspace.manifest.scripts = new Map([
@@ -131,6 +156,25 @@ describe(`wrapScriptExecution`, () => {
 
       expect(await executeHook(`wrapper-script`)).toBe(defaultExecutor);
     });
+
+    test(`when trying to run a script  with unsupported syntax`, async () => {
+      primaryWorkspace.manifest.scripts = new Map([
+        [`wrapper-script`, `yarn run local-script $VARIABLE`],
+      ]);
+
+      expect(await executeHook(`wrapper-script`)).toBe(defaultExecutor);
+    });
+
+    test(`when trying to run a global script with unsupported syntax`, async () => {
+      primaryWorkspace.manifest.scripts = new Map([
+        [`wrapper-script`, `yarn run global:script $VARIABLE`],
+      ]);
+      secondaryWorkspace.manifest.scripts = new Map([
+        [`global:script`, `this is the global script`],
+      ]);
+
+      expect(await executeHook(`wrapper-script`)).toBe(defaultExecutor);
+    });
   });
 
   describe(`should return an executor that wraps executePackageScript`, () => {
@@ -138,6 +182,23 @@ describe(`wrapScriptExecution`, () => {
       primaryWorkspace.manifest.scripts = new Map([
         [`local-script`, `this is the local script`],
         [`wrapper-script`, `yarn run local-script`],
+      ]);
+
+      await runExecutorAndAssert(
+        await executeHook(`wrapper-script`),
+        scriptUtils.executePackageScript, [
+          primaryWorkspace.locator,
+          `local-script`,
+          [],
+          {project, stdin, stdout, stderr},
+        ],
+      );
+    });
+
+    test(`when running a script that explicitly wraps a local script with short-form run`, async () => {
+      primaryWorkspace.manifest.scripts = new Map([
+        [`local-script`, `this is the local script`],
+        [`wrapper-script`, `run local-script`],
       ]);
 
       await runExecutorAndAssert(
@@ -173,8 +234,65 @@ describe(`wrapScriptExecution`, () => {
       );
     });
   });
+
+  describe(`when wrapping executePackageScript`, () => {
+    it(`should forward arguments that can be parsed out of the wrapper script`, async () => {
+      primaryWorkspace.manifest.scripts = new Map([
+        [`local-script`, `this is the local script`],
+        [`wrapper-script`, `yarn run local-script -w ./i --th 'argu ments'`],
+      ]);
+
+      await runExecutorAndAssert(
+        await executeHook(`wrapper-script`),
+        scriptUtils.executePackageScript,
+        [
+          primaryWorkspace.locator,
+          `local-script`,
+          [`-w`, `./i`, `--th`, `argu ments`],
+          {project, stdin, stdout, stderr},
+        ],
+      );
+    });
+
+    it(`should forward arguments given to the wrapper script`, async () => {
+      primaryWorkspace.manifest.scripts = new Map([
+        [`local-script`, `this is the local script`],
+        [`wrapper-script`, `yarn run local-script`],
+      ]);
+
+      await runExecutorAndAssert(
+        await executeHook(`wrapper-script`, {args: [`-w`, `./i`, `--th`, `argu ments`]}),
+        scriptUtils.executePackageScript,
+        [
+          primaryWorkspace.locator,
+          `local-script`,
+          [`-w`, `./i`, `--th`, `argu ments`],
+          {project, stdin, stdout, stderr},
+        ],
+      );
+    });
+
+    it(`should forward arguments given to the wrapper script after arguments parsed out of the wrapper script`, async () => {
+      primaryWorkspace.manifest.scripts = new Map([
+        [`local-script`, `this is the local script`],
+        [`wrapper-script`, `yarn run local-script --hardcoded`],
+      ]);
+
+      await runExecutorAndAssert(
+        await executeHook(`wrapper-script`, {args: [`--passed`]}),
+        scriptUtils.executePackageScript,
+        [
+          primaryWorkspace.locator,
+          `local-script`,
+          [`--hardcoded`, `--passed`],
+          {project, stdin, stdout, stderr},
+        ],
+      );
+    });
+  });
 });
 
+// TODO: Audit. Are there any constructs we currently allow that have significance to shells?
 describe(`_parseCommandString`, () => {
   it.each([
     [`well-formatted positional args`, `yarn run script`, [`yarn`, `run`, `script`]],
@@ -203,6 +321,8 @@ describe(`_parseCommandString`, () => {
     [`carets`, `^1.2.3`],
     [`tildes`, `~1.2.3`],
     [`exclamation points`, `!not`],
+    // TODO: This one is a bummer, because the equals sign sometimes appears in CLI flags in a
+    // manner that is not interesting to shells.
     [`equal signs`, `FOO=bar`],
   ])(`should parse %s in single quotes, but not raw or in double quotes`, (_, given) => {
     expect(_parseCommandString(given)).toBeUndefined();
@@ -218,9 +338,6 @@ describe(`_parseCommandString`, () => {
     expect(_parseCommandString(`'${given}'`)).toBeUndefined();
   });
 
-  // TODO: Audit. Are there any constructs we currently allow that have significance to shells?
-  // For example, we currently whitelist prefixing commands with environment variables, which
-  // needs a shell to properly execute, which is not okay.
   it.each([
     [`single-quoted strings immediately following a simple string`, `quote'd'`],
     [`double-quoted strings immediately following a simple string`, `quote"d"`],
@@ -230,9 +347,6 @@ describe(`_parseCommandString`, () => {
     [`a double quote terminated by a single quote`, `"foo'`],
     [`a single-quoted string interrupted by an escaped single quote`, `'foo'"'"'bar'`],
     [`a double-quoted string interrupted by an escaped double quote`, `"foo"'"'"bar"`],
-    // TODO: This one is a bummer, because the obvious way to ban it easily is to ban the equals
-    // sign but those are also used to pass arguments sometimes!
-    [`a command with an environment variable prefix`, `FOO=bar run`],
   ])(`should not parse %s`, (_, given) => {
     expect(_parseCommandString(given)).toBeUndefined();
   });
