@@ -1,8 +1,8 @@
-import {Workspace, Project, Locator, IdentHash, LocatorHash, Manifest} from "@yarnpkg/core";
-import {PortablePath}                                                  from '@yarnpkg/fslib';
-import {Writable, Readable}                                            from 'stream';
+import {Workspace, Project, Locator, IdentHash, LocatorHash, Manifest, Configuration, ProjectLookup} from "@yarnpkg/core";
+import {PortablePath, npath}                                                                         from '@yarnpkg/fslib';
+import {Writable, Readable}                                                                          from 'stream';
 
-import {wrapScriptExecution, _parseCommandString}                      from "../sources/hooks/wrapScriptExecution";
+import {wrapScriptExecution, _parseCommandString}                                                    from "../sources/hooks/wrapScriptExecution";
 
 jest.mock(`@yarnpkg/core`, () => ({
   ...jest.requireActual(`@yarnpkg/core`),
@@ -12,6 +12,8 @@ jest.mock(`@yarnpkg/core`, () => ({
     executeWorkspaceScript: jest.fn(),
   },
 }));
+
+const PROJECT_FIXTURE_PATH = npath.join(__dirname, `fixtures`);
 
 type ProcessEnvironment = Record<string, string>;
 
@@ -32,6 +34,14 @@ describe(`wrapScriptExecution`, () => {
   const stdin = Symbol(`stdin`) as unknown as Readable;
   const stdout = Symbol(`stdout`) as unknown as Writable;
   const stderr = Symbol(`stdout`) as unknown as Writable;
+
+  let projecet: Project;
+
+  beforeAll(async () => {
+    const configuration = await Configuration.find(__dirname as PortablePath, null, {lookup: ProjectLookup.MANIFEST, strict: false});
+    projecet = (await Project.find(configuration, PROJECT_FIXTURE_PATH as PortablePath)).project;
+    console.log(projecet);
+  });
 
   const project = new Project(`/project` as PortablePath, {configuration: null as any});
 

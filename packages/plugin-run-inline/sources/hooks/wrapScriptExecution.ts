@@ -23,6 +23,7 @@ export const wrapScriptExecution: Required<Hooks>["wrapScriptExecution"] = async
 
   const parsedCommand = _parseCommandString(extra.script);
   // TODO: Can we support yarn exec? What about implicit run (without the run keyword)?
+  // TODO: It appears that `run` is put on Yarn's path as an alias for `yarn run`? Do we support?
   if (parsedCommand?.length > 2 && parsedCommand[0] === `yarn` && parsedCommand[1] === `run`) {
     const [scriptName, ...restArgs] = parsedCommand.slice(2);
     const args = [...restArgs, ...extra.args];
