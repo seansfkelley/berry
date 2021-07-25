@@ -82,10 +82,10 @@ export const wrapScriptExecution: Required<Hooks>["wrapScriptExecution"] = async
   return executor;
 };
 
-const SHELL_SAFE_CHARACTERS = `-.,a-zA-Z0-9_/:=@`;
+const SHELL_SAFE_CHARACTERS = `-.,a-zA-Z0-9_/:@`;
 const UNQUOTED_CHARACTERS = new RegExp(`^[${SHELL_SAFE_CHARACTERS}]+`);
 const DOUBLE_QUOTED_CHARACTERS = new RegExp(`^[${SHELL_SAFE_CHARACTERS}\t ']+`);
-const SINGLE_QUOTED_CHARACTERS = new RegExp(`^[${SHELL_SAFE_CHARACTERS}\t ()[\\]{};$*+|&"^~!]+`);
+const SINGLE_QUOTED_CHARACTERS = new RegExp(`^[${SHELL_SAFE_CHARACTERS}\t ()[\\]{};$*+|&"^~!=]+`);
 
 /**
  * Exported for testing.

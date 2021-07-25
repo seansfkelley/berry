@@ -1,8 +1,8 @@
-import {Workspace, Project, Locator, IdentHash, LocatorHash, Manifest, Configuration, ProjectLookup} from "@yarnpkg/core";
-import {PortablePath, npath}                                                                         from '@yarnpkg/fslib';
-import {Writable, Readable}                                                                          from 'stream';
+import {Workspace, Project, Configuration, ProjectLookup} from "@yarnpkg/core";
+import {PortablePath, npath}                              from '@yarnpkg/fslib';
+import {Writable, Readable}                               from 'stream';
 
-import {wrapScriptExecution, _parseCommandString}                                                    from "../sources/hooks/wrapScriptExecution";
+import {wrapScriptExecution, _parseCommandString}         from "../sources/hooks/wrapScriptExecution";
 
 jest.mock(`@yarnpkg/core`, () => ({
   ...jest.requireActual(`@yarnpkg/core`),
@@ -13,12 +13,9 @@ jest.mock(`@yarnpkg/core`, () => ({
   },
 }));
 
-const PROJECT_FIXTURE_PATH = npath.join(__dirname, `fixtures`);
+const PROJECT_FIXTURE_PATH = npath.join(__dirname, `fixtures`) as PortablePath;
 
 type ProcessEnvironment = Record<string, string>;
-
-// Should be Writable but that's another type in this file.
-type UnReadonly<T> = { -readonly [P in keyof T]: T[P] };
 
 describe(`wrapScriptExecution`, () => {
   const scriptUtils: {
@@ -35,38 +32,18 @@ describe(`wrapScriptExecution`, () => {
   const stdout = Symbol(`stdout`) as unknown as Writable;
   const stderr = Symbol(`stdout`) as unknown as Writable;
 
-  let projecet: Project;
+  let project: Project;
+  let primaryWorkspace: Workspace;
+  let secondaryWorkspace: Workspace;
+  let tertiaryWorkspace: Workspace;
 
   beforeAll(async () => {
-    const configuration = await Configuration.find(__dirname as PortablePath, null, {lookup: ProjectLookup.MANIFEST, strict: false});
-    projecet = (await Project.find(configuration, PROJECT_FIXTURE_PATH as PortablePath)).project;
-    console.log(projecet);
+    const configuration = await Configuration.find(PROJECT_FIXTURE_PATH, null, {lookup: ProjectLookup.MANIFEST, strict: false});
+    project = (await Project.find(configuration, PROJECT_FIXTURE_PATH)).project;
+    primaryWorkspace = project.workspaces.find(w => w.locator.name === `primary`)!;
+    secondaryWorkspace = project.workspaces.find(w => w.locator.name === `secondary`)!;
+    tertiaryWorkspace = project.workspaces.find(w => w.locator.name === `tertiary`)!;
   });
-
-  const project = new Project(`/project` as PortablePath, {configuration: null as any});
-
-  const thisWorkspace = new Workspace(`/project/this-workspace` as PortablePath, {project});
-  const otherWorkspace = new Workspace(`/project/other-workspace` as PortablePath, {project});
-
-  project.workspaces = [thisWorkspace, otherWorkspace];
-
-  const thisLocator: Locator = {
-    identHash: `1` as IdentHash,
-    scope: null,
-    name: `this`,
-    locatorHash: `1` as LocatorHash,
-    reference: `1`,
-  };
-  const otherLocator: Locator = {
-    identHash: `2` as IdentHash,
-    scope: null,
-    name: `other`,
-    locatorHash: `2` as LocatorHash,
-    reference: `2`,
-  };
-
-  project.workspacesByIdent.set(thisLocator.identHash, thisWorkspace);
-  project.workspacesByIdent.set(otherLocator.identHash, otherWorkspace);
 
   afterAll(() => {
     jest.unmock(`@yarnpkg/core`);
@@ -76,8 +53,9 @@ describe(`wrapScriptExecution`, () => {
     scriptUtils.executePackageScript.mockReset();
     scriptUtils.executeWorkspaceScript.mockReset();
 
-    (thisWorkspace as UnReadonly<typeof thisWorkspace>).manifest = new Manifest();
-    (otherWorkspace as UnReadonly<typeof otherWorkspace>).manifest = new Manifest();
+    primaryWorkspace.manifest.scripts = new Map();
+    secondaryWorkspace.manifest.scripts = new Map();
+    tertiaryWorkspace.manifest.scripts = new Map();
   });
 
   function executeHook(
@@ -87,10 +65,10 @@ describe(`wrapScriptExecution`, () => {
     return wrapScriptExecution(
       defaultExecutor,
       project,
-      thisLocator,
+      primaryWorkspace.locator,
       scriptName,
       {
-        script: thisWorkspace.manifest.scripts.get(scriptName)!,
+        script: primaryWorkspace.manifest.scripts.get(scriptName)!,
         args: extra?.args ?? [],
         cwd: extra?.cwd ?? `/random/directory` as PortablePath,
         env: extra?.env ?? env,
@@ -112,7 +90,7 @@ describe(`wrapScriptExecution`, () => {
 
   describe(`should return the default executor`, () => {
     test(`when trying to run a script that does not start with yarn`, async () => {
-      thisWorkspace.manifest.scripts = new Map([
+      primaryWorkspace.manifest.scripts = new Map([
         [`script`, `notyarn run another:script`],
       ]);
 
@@ -121,7 +99,7 @@ describe(`wrapScriptExecution`, () => {
 
     // TODO: Do we want to this executePackageScript instead?
     test(`when running a script that implicitly wraps a local script`, async () => {
-      thisWorkspace.manifest.scripts = new Map([
+      primaryWorkspace.manifest.scripts = new Map([
         [`local-script`, `this is the local script`],
         [`wrapper-script`, `yarn local-script`],
       ]);
@@ -130,10 +108,10 @@ describe(`wrapScriptExecution`, () => {
     });
 
     test(`when trying to run a global script whose name does not contain a colon`, async () => {
-      thisWorkspace.manifest.scripts = new Map([
+      primaryWorkspace.manifest.scripts = new Map([
         [`wrapper-script`, `yarn run not-actually-a-global-script`],
       ]);
-      otherWorkspace.manifest.scripts = new Map([
+      secondaryWorkspace.manifest.scripts = new Map([
         [`not-actually-a-global-script`, `this is the global script`],
       ]);
 
@@ -141,13 +119,15 @@ describe(`wrapScriptExecution`, () => {
     });
 
     test(`when trying to run a global script that has multiple other definitions`, async () => {
-      thisWorkspace.manifest.scripts = new Map([
+      primaryWorkspace.manifest.scripts = new Map([
         [`wrapper-script`, `yarn run global:script`],
       ]);
-      otherWorkspace.manifest.scripts = new Map([
+      secondaryWorkspace.manifest.scripts = new Map([
         [`global:script`, `this is the global script`],
       ]);
-      // TODO: A third workspace!
+      tertiaryWorkspace.manifest.scripts = new Map([
+        [`global:script`, `this is the global script`],
+      ]);
 
       expect(await executeHook(`wrapper-script`)).toBe(defaultExecutor);
     });
@@ -155,7 +135,7 @@ describe(`wrapScriptExecution`, () => {
 
   describe(`should return an executor that wraps executePackageScript`, () => {
     test(`when running a script that explicitly wraps a local script`, async () => {
-      thisWorkspace.manifest.scripts = new Map([
+      primaryWorkspace.manifest.scripts = new Map([
         [`local-script`, `this is the local script`],
         [`wrapper-script`, `yarn run local-script`],
       ]);
@@ -163,7 +143,7 @@ describe(`wrapScriptExecution`, () => {
       await runExecutorAndAssert(
         await executeHook(`wrapper-script`),
         scriptUtils.executePackageScript, [
-          thisLocator,
+          primaryWorkspace.locator,
           `local-script`,
           [],
           {project, stdin, stdout, stderr},
@@ -174,10 +154,10 @@ describe(`wrapScriptExecution`, () => {
 
   describe(`should return an executor that wraps executeWorkspaceScript`, () => {
     test(`when running a script that wraps a global script whose name includes a colon`, async () => {
-      thisWorkspace.manifest.scripts = new Map([
+      primaryWorkspace.manifest.scripts = new Map([
         [`wrapper-script`, `yarn run global:script`],
       ]);
-      otherWorkspace.manifest.scripts = new Map([
+      secondaryWorkspace.manifest.scripts = new Map([
         [`global:script`, `this is the global script`],
       ]);
 
@@ -185,7 +165,7 @@ describe(`wrapScriptExecution`, () => {
         await executeHook(`wrapper-script`),
         scriptUtils.executeWorkspaceScript,
         [
-          otherWorkspace,
+          secondaryWorkspace,
           `global:script`,
           [],
           {stdin, stdout, stderr},
@@ -199,7 +179,7 @@ describe(`_parseCommandString`, () => {
   it.each([
     [`well-formatted positional args`, `yarn run script`, [`yarn`, `run`, `script`]],
     [`positional args with extraneous whitespace`, ` \tyarn \t run\t\t script    `, [`yarn`, `run`, `script`]],
-    [`short and long flags`, `-f --lag -s --with=args`, [`-f`, `--lag`, `-s`, `--with=args`]],
+    [`short and long flags`, `-f --lag -s --with args`, [`-f`, `--lag`, `-s`, `--with`, `args`]],
     [`file paths and simple pattern lists`, `/absolute/path relative/path.ext . .. foo/,bar/`, [`/absolute/path`, `relative/path.ext`, `.`, `..`, `foo/,bar/`]],
     [`numbers and unusual identifiers`, `123 yarn:script:name SHOUTING_CASE @scope/package@1.2.3`, [`123`, `yarn:script:name`, `SHOUTING_CASE`, `@scope/package@1.2.3`]],
     [`quoted strings without whitespace`, `'foo' "bar"`, [`foo`, `bar`]],
@@ -212,7 +192,7 @@ describe(`_parseCommandString`, () => {
 
   it.each([
     [`parentheses`, `(foo)`],
-    [`brackets`, `[ foo = bar ]`],
+    [`brackets`, `[ foo ]`],
     [`braces`, `{glib,glob}`],
     [`dollar signs`, `$env`],
     [`asterisks`, `*.splat`],
@@ -223,6 +203,7 @@ describe(`_parseCommandString`, () => {
     [`carets`, `^1.2.3`],
     [`tildes`, `~1.2.3`],
     [`exclamation points`, `!not`],
+    [`equal signs`, `FOO=bar`],
   ])(`should parse %s in single quotes, but not raw or in double quotes`, (_, given) => {
     expect(_parseCommandString(given)).toBeUndefined();
     expect(_parseCommandString(`"${given}"`)).toBeUndefined();
