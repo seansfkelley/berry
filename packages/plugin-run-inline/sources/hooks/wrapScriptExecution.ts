@@ -11,11 +11,8 @@ export const wrapScriptExecution: Hooks["wrapScriptExecution"] = async (
   scriptName: string,
   extra: {script: string, args: Array<string>, cwd: PortablePath, env: ProcessEnvironment, stdin: Readable | null, stdout: Writable, stderr: Writable},
 ): Promise<() => Promise<number>> => {
-  if (extra.env.CI || extra.env.DONT_INLINE_RECURSIVE_YARN)
-    return executor;
-
   const workspace = project.workspacesByIdent.get(locator.identHash);
-  if (!workspace) // I dunno what this even means or if it's even possible.
+  if (!workspace) // I dunno what this would mean or if it's even possible.
     return executor;
 
   console.log();
@@ -24,13 +21,15 @@ export const wrapScriptExecution: Hooks["wrapScriptExecution"] = async (
   console.log(`args`, JSON.stringify(extra.args));
   console.log(`cwd`, JSON.stringify(extra.cwd));
 
-  const parsedArgs = _parseCommandString(extra.script);
-  if (parsedArgs && parsedArgs[0] === `yarn` && parsedArgs[1] === `run`) {
-    const [scriptName, ...restArgs] = parsedArgs.slice(2);
+  const parsedCommand = _parseCommandString(extra.script);
+  // TODO: Can we support yarn exec? What about implicit run (without the run keyword)?
+  if (parsedCommand?.length > 2 && parsedCommand[0] === `yarn` && parsedCommand[1] === `run`) {
+    const [scriptName, ...restArgs] = parsedCommand.slice(2);
     const args = [...restArgs, ...extra.args];
     if (workspace.manifest.scripts.has(scriptName)) {
       console.log(`will execute package-local script ${scriptName} with`, args);
       return () => {
+        // TODO: should we be concerned about things like INIT_CWD or other things we're not explicitly emulating when inlining?
         return scriptUtils.executePackageScript(locator, scriptName, args, {
           project,
           stdin: extra.stdin,
@@ -43,6 +42,7 @@ export const wrapScriptExecution: Hooks["wrapScriptExecution"] = async (
       if (candidates.length === 1) {
         console.log(`will execute global script ${scriptName} with`, args);
         return () => {
+          // TODO: should we be concerned about things like INIT_CWD or other things we're not explicitly emulating when inlining?
           return scriptUtils.executeWorkspaceScript(candidates[0], scriptName, args, {
             stdin: extra.stdin,
             stdout: extra.stdout,

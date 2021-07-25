@@ -1,7 +1,59 @@
+import {Workspace, Project, Locator, IdentHash}   from "@yarnpkg/core";
+import {PortablePath}                             from '@yarnpkg/fslib';
+
 import {wrapScriptExecution, _parseCommandString} from "../sources/hooks/wrapScriptExecution";
 
 describe(`wrapScriptExecution`, () => {
+  let scriptUtils: {
+    executePackageScript: ReturnType<(typeof jest)['fn']>,
+    executeWorkspaceScript: ReturnType<(typeof jest)['fn']>,
+  };
+  const defaultExecutor = jest.fn(async () => 0);
 
+  const project = new Project(`` as PortablePath, {configuration: null as any});
+
+  const thisWorkspace = new Workspace(`` as PortablePath, {project});
+  const otherWorkspace = new Workspace(`` as PortablePath, {project});
+
+  const thisLocator: Locator = {
+    identHash: `` as IdentHash,
+  };
+  const otherLocator: Locator = {
+    identHash: `` as IdentHash,
+  };
+
+  beforeAll(() => {
+    jest.mock(`@yarnpkg/core`, () => ({
+      ...jest.requireActual(`@yarnpkg/core`),
+      scriptUtils: {
+        ...jest.requireActual(`@yarnpkg/core`).scriptUtils,
+        executePackageScript: jest.fn(),
+        executeWorkspaceScript: jest.fn(),
+      },
+    }));
+
+    scriptUtils = require(`@yarnpkg/core`).scriptUtils;
+  });
+
+  afterAll(() => {
+    jest.unmock(`@yarnpkg/core`);
+  });
+
+  beforeEach(() => {
+    scriptUtils.executePackageScript.mockReset();
+    scriptUtils.executeWorkspaceScript.mockReset();
+  });
+
+  it(`should call executePackageScript`, async () => {
+    const executor = await wrapScriptExecution(defaultExecutor, project, thisLocator, ``, {});
+
+    // expect(executor).not.toBe(defaultExecutor);
+    // await executor();
+
+    scriptUtils.executePackageScript();
+    // We should probably do this beforeEach
+    expect(scriptUtils.executePackageScript).toBeCalledTimes(1);
+  });
 });
 
 describe(`_parseCommandString`, () => {
@@ -43,6 +95,9 @@ describe(`_parseCommandString`, () => {
     expect(_parseCommandString(`'${given}'`)).toBeUndefined();
   });
 
+  // TODO: Audit. Are there any constructs we currently allow that have significance to shells?
+  // For example, we currently whitelist prefixing commands with environment variables, which
+  // needs a shell to properly execute, which is not okay.
   it.each([
     [`single-quoted strings immediately following a simple string`, `quote'd'`],
     [`double-quoted strings immediately following a simple string`, `quote"d"`],
@@ -52,6 +107,9 @@ describe(`_parseCommandString`, () => {
     [`a double quote terminated by a single quote`, `"foo'`],
     [`a single-quoted string interrupted by an escaped single quote`, `'foo'"'"'bar'`],
     [`a double-quoted string interrupted by an escaped double quote`, `"foo"'"'"bar"`],
+    // TODO: This one is a bummer, because the obvious way to ban it easily is to ban the equals
+    // sign but those are also used to pass arguments sometimes!
+    [`a command with an environment variable prefix`, `FOO=bar run`],
   ])(`should not parse %s`, (_, given) => {
     expect(_parseCommandString(given)).toBeUndefined();
   });
