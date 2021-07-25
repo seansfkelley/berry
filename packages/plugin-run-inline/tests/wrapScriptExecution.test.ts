@@ -191,7 +191,7 @@ describe(`_parseCommandString`, () => {
     [`positional args with extraneous whitespace`, ` \tyarn \t run\t\t script    `, [`yarn`, `run`, `script`]],
     [`short and long flags`, `-f --lag -s --with=args`, [`-f`, `--lag`, `-s`, `--with=args`]],
     [`file paths and simple pattern lists`, `/absolute/path relative/path.ext . .. foo/,bar/`, [`/absolute/path`, `relative/path.ext`, `.`, `..`, `foo/,bar/`]],
-    [`numbers and unusual identifiers`, `123 yarn:script:name SHOUTING_CASE`, [`123`, `yarn:script:name`, `SHOUTING_CASE`]],
+    [`numbers and unusual identifiers`, `123 yarn:script:name SHOUTING_CASE @scope/package@1.2.3`, [`123`, `yarn:script:name`, `SHOUTING_CASE`, `@scope/package@1.2.3`]],
     [`quoted strings without whitespace`, `'foo' "bar"`, [`foo`, `bar`]],
     [`quoted strings with whitespace`, `'simple white space' " \t lots \tof white  space\t\t"`, [`simple white space`, ` \t lots \tof white  space\t\t`]],
     [`single-quoted strings containing double quotes`, `'foo " bar " baz'`, [`foo " bar " baz`]],
@@ -210,6 +210,9 @@ describe(`_parseCommandString`, () => {
     [`semicolons`, `first ; second`],
     [`ampersands`, `and && and`],
     [`pipes`, `or || or`],
+    [`carets`, `^1.2.3`],
+    [`tildes`, `~1.2.3`],
+    [`exclamation points`, `!not`],
   ])(`should parse %s in single quotes, but not raw or in double quotes`, (_, given) => {
     expect(_parseCommandString(given)).toBeUndefined();
     expect(_parseCommandString(`"${given}"`)).toBeUndefined();
