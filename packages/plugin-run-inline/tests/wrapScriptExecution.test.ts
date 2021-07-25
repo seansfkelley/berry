@@ -1,39 +1,80 @@
-import {Workspace, Project, Locator, IdentHash}   from "@yarnpkg/core";
-import {PortablePath}                             from '@yarnpkg/fslib';
+import {Workspace, Project, Locator, IdentHash, LocatorHash, Manifest} from "@yarnpkg/core";
+import {PortablePath}                                                  from '@yarnpkg/fslib';
+import {Writable, Readable}                                            from 'stream';
 
-import {wrapScriptExecution, _parseCommandString} from "../sources/hooks/wrapScriptExecution";
+import {wrapScriptExecution, _parseCommandString}                      from "../sources/hooks/wrapScriptExecution";
+
+jest.mock(`@yarnpkg/core`, () => ({
+  ...jest.requireActual(`@yarnpkg/core`),
+  scriptUtils: {
+    ...jest.requireActual(`@yarnpkg/core`).scriptUtils,
+    executePackageScript: jest.fn(),
+    executeWorkspaceScript: jest.fn(),
+  },
+}));
+
+type ProcessEnvironment = Record<string, string>;
+
+// Should be Writable but that's another type in this file.
+type UnReadonly<T> = { -readonly [P in keyof T]: T[P] };
 
 describe(`wrapScriptExecution`, () => {
-  let scriptUtils: {
+  const scriptUtils: {
     executePackageScript: ReturnType<(typeof jest)['fn']>,
     executeWorkspaceScript: ReturnType<(typeof jest)['fn']>,
-  };
+  } = require(`@yarnpkg/core`).scriptUtils;
   const defaultExecutor = jest.fn(async () => 0);
 
-  const project = new Project(`` as PortablePath, {configuration: null as any});
+  // TODO: Move all these fixtures into a fixture directory or whatever.
+  // TODO: These should probably be created afresh in each test...
+  const env: ProcessEnvironment = {};
+  const stdin = Symbol(`stdin`) as unknown as Readable;
+  const stdout = Symbol(`stdout`) as unknown as Writable;
+  const stderr = Symbol(`stdout`) as unknown as Writable;
 
-  const thisWorkspace = new Workspace(`` as PortablePath, {project});
-  const otherWorkspace = new Workspace(`` as PortablePath, {project});
+  const project = new Project(`/project` as PortablePath, {configuration: null as any});
+
+  const thisWorkspace = new Workspace(`/project/this-workspace` as PortablePath, {project});
+  const otherWorkspace = new Workspace(`/project/other-workspace` as PortablePath, {project});
+
+  project.workspaces = [thisWorkspace, otherWorkspace];
 
   const thisLocator: Locator = {
-    identHash: `` as IdentHash,
+    identHash: `1` as IdentHash,
+    scope: null,
+    name: `this`,
+    locatorHash: `1` as LocatorHash,
+    reference: `1`,
   };
   const otherLocator: Locator = {
-    identHash: `` as IdentHash,
+    identHash: `2` as IdentHash,
+    scope: null,
+    name: `other`,
+    locatorHash: `2` as LocatorHash,
+    reference: `2`,
   };
 
-  beforeAll(() => {
-    jest.mock(`@yarnpkg/core`, () => ({
-      ...jest.requireActual(`@yarnpkg/core`),
-      scriptUtils: {
-        ...jest.requireActual(`@yarnpkg/core`).scriptUtils,
-        executePackageScript: jest.fn(),
-        executeWorkspaceScript: jest.fn(),
-      },
-    }));
+  (thisWorkspace as UnReadonly<typeof thisWorkspace>).locator = thisLocator;
+  (otherWorkspace as UnReadonly<typeof otherWorkspace>).locator = otherLocator;
 
-    scriptUtils = require(`@yarnpkg/core`).scriptUtils;
-  });
+  project.workspacesByIdent.set(thisLocator.identHash, thisWorkspace);
+  project.workspacesByIdent.set(otherLocator.identHash, otherWorkspace);
+
+  (thisWorkspace as UnReadonly<typeof thisWorkspace>).manifest = new Manifest();
+  // TODO: There should be a lot more test cases with flags and stuff.
+  thisWorkspace.manifest.scripts = new Map([
+    [`local-script`, `this is the local script`],
+    [`yarn-run-local-script-explicit`, `yarn run local-script`],
+    [`yarn-run-local-script-implicit`, `yarn local-script`],
+    [`yarn-run-unknown-script`, `yarn run unknown-script`],
+    [`yarn-run-global-script`, `yarn run global:script`],
+    [`yarn-exec-echo`, `yarn exec echo`],
+  ]);
+
+  (otherWorkspace as UnReadonly<typeof otherWorkspace>).manifest = new Manifest();
+  otherWorkspace.manifest.scripts = new Map([
+    [`global:script`, `this is the global script`],
+  ]);
 
   afterAll(() => {
     jest.unmock(`@yarnpkg/core`);
@@ -44,15 +85,72 @@ describe(`wrapScriptExecution`, () => {
     scriptUtils.executeWorkspaceScript.mockReset();
   });
 
-  it(`should call executePackageScript`, async () => {
-    const executor = await wrapScriptExecution(defaultExecutor, project, thisLocator, ``, {});
+  function executeHook(
+    scriptName: string,
+    extra?: {args?: Array<string>, cwd?: PortablePath, env?: ProcessEnvironment}
+  ) {
+    return wrapScriptExecution(
+      defaultExecutor,
+      project,
+      thisLocator,
+      scriptName,
+      {
+        script: thisWorkspace.manifest.scripts.get(scriptName)!,
+        args: extra?.args ?? [],
+        cwd: extra?.cwd ?? `/random/directory` as PortablePath,
+        env: extra?.env ?? env,
+        stdin,
+        stdout,
+        stderr,
+      }
+    );
+  }
 
-    // expect(executor).not.toBe(defaultExecutor);
-    // await executor();
+  describe(`should return the default executor`, () => {
+    test(`when running a script that is neither local nor global`, async () => {
+      const scriptName = `yarn-run-unknown-script`;
+      const executor = await executeHook(scriptName);
 
-    scriptUtils.executePackageScript();
-    // We should probably do this beforeEach
-    expect(scriptUtils.executePackageScript).toBeCalledTimes(1);
+      expect(executor).toBe(defaultExecutor);
+    });
+  });
+
+  describe(`should return an executor that wraps executePackageScript`, () => {
+    test(`when running a script that wraps a local script`, async () => {
+      const scriptName = `yarn-run-local-script-explicit`;
+      const executor = await executeHook(scriptName);
+
+      expect(executor).not.toBe(defaultExecutor);
+
+      await executor();
+
+      expect(scriptUtils.executePackageScript).toBeCalledTimes(1);
+      expect(scriptUtils.executePackageScript).toHaveBeenLastCalledWith(
+        thisLocator,
+        `local-script`,
+        [],
+        {project, stdin, stdout, stderr},
+      );
+    });
+  });
+
+  describe(`should return an executor that wraps executeWorkspaceScript`, () => {
+    test(`when running a script that wraps a global script`, async () => {
+      const scriptName = `yarn-run-global-script`;
+      const executor = await executeHook(scriptName);
+
+      expect(executor).not.toBe(defaultExecutor);
+
+      await executor();
+
+      expect(scriptUtils.executeWorkspaceScript).toBeCalledTimes(1);
+      expect(scriptUtils.executeWorkspaceScript).toHaveBeenLastCalledWith(
+        otherWorkspace,
+        `global:script`,
+        [],
+        {stdin, stdout, stderr},
+      );
+    });
   });
 });
 
