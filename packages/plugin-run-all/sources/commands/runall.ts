@@ -9,70 +9,25 @@ import pLimit                                              from 'p-limit';
 import {Writable}                                          from 'stream';
 import * as t                                              from 'typanion';
 
+const STAR = Symbol(`*`);
+const STAR_STAR = Symbol(`**`);
+
 export class RunallCommand extends BaseCommand {
   static paths = [
     [`runall`],
     [`run-all`],
   ];
 
-  static usage: Usage = Command.Usage({
-    category: `Workspace-related commands`,
-    description: `run a command on all workspaces`,
-    details: `
-      This command will run a given sub-command on current and all its descendant workspaces. Various flags can alter the exact behavior of the command:
-
-      - If \`-p,--parallel\` is set, the commands will be ran in parallel; they'll by default be limited to a number of parallel tasks roughly equal to half your core number, but that can be overridden via \`-j,--jobs\`.
-
-      - If \`-p,--parallel\` and \`-i,--interlaced\` are both set, Yarn will print the lines from the output as it receives them. If \`-i,--interlaced\` wasn't set, it would instead buffer the output from each process and print the resulting buffers only after their source processes have exited.
-
-      - If \`-t,--topological\` is set, Yarn will only run the command after all workspaces that it depends on through the \`dependencies\` field have successfully finished executing. If \`--topological-dev\` is set, both the \`dependencies\` and \`devDependencies\` fields will be considered when figuring out the wait points.
-
-      - If \`-A,--all\` is set, Yarn will run the command on all the workspaces of a project. By default yarn runs the command only on current and all its descendant workspaces.
-
-      - If \`-R,--recursive\` is set, Yarn will find workspaces to run the command on by recursively evaluating \`dependencies\` and \`devDependencies\` fields, instead of looking at the \`workspaces\` fields.
-
-      - If \`--from\` is set, Yarn will use the packages matching the 'from' glob as the starting point for any recursive search.
-
-      - The command may apply to only some workspaces through the use of \`--include\` which acts as a whitelist. The \`--exclude\` flag will do the opposite and will be a list of packages that mustn't execute the script. Both flags accept glob patterns (if valid Idents and supported by [micromatch](https://github.com/micromatch/micromatch)). Make sure to escape the patterns, to prevent your own shell from trying to expand them.
-
-      Adding the \`-v,--verbose\` flag will cause Yarn to print more information; in particular the name of the workspace that generated the output will be printed at the front of each line.
-
-      If the command is \`run\` and the script being run does not exist the child workspace will be skipped without error.
-    `,
-    examples: [[
-      `Publish current and all descendant packages`,
-      `yarn workspaces foreach npm publish --tolerate-republish`,
-    ], [
-      `Run build script on current and all descendant packages`,
-      `yarn workspaces foreach run build`,
-    ], [
-      `Run build script on current and all descendant packages in parallel, building package dependencies first`,
-      `yarn workspaces foreach -pt run build`,
-    ],
-    [
-      `Run build script on several packages and all their dependencies, building dependencies first`,
-      `yarn workspaces foreach -ptR --from '{workspace-a,workspace-b}' run build`,
-    ]],
-  });
-
-  recursive = Option.Boolean(`-R,--recursive`, false, {
-    description: `Find packages via dependencies/devDependencies instead of using the workspaces field`,
-  });
-
-  from = Option.Array(`--from`, [], {
-    description: `An array of glob pattern idents from which to base any recursion`,
-  });
-
-  all = Option.Boolean(`-A,--all`, false, {
-    description: `Run the command on all workspaces of a project`,
-  });
-
-  verbose = Option.Boolean(`-v,--verbose`, false, {
-    description: `Prefix each output line with the name of the originating workspace`,
+  continue = Option.Boolean(`-c,--continue`, false, {
+    // description: `Find packages via dependencies/devDependencies instead of using the workspaces field`,
   });
 
   parallel = Option.Boolean(`-p,--parallel`, false, {
     description: `Run the commands in parallel`,
+  });
+
+  verbose = Option.Boolean(`-v,--verbose`, false, {
+    description: `Prefix each output line with the name of the originating workspace`,
   });
 
   interlaced = Option.Boolean(`-i,--interlaced`, false, {
@@ -84,56 +39,88 @@ export class RunallCommand extends BaseCommand {
     validator: t.applyCascade(t.isNumber(), [t.isInteger(), t.isAtLeast(2)]),
   });
 
-  topological = Option.Boolean(`-t,--topological`, false, {
-    description: `Run the command after all workspaces it depends on (regular) have finished`,
-  });
+  scriptsAndArgs = Option.Proxy();
 
-  topologicalDev = Option.Boolean(`--topological-dev`, false, {
-    description: `Run the command after all workspaces it depends on (regular + dev) have finished`,
-  });
+  private processScriptInvocation(command: string): [Array<string | typeof STAR | typeof STAR_STAR>, Array<string>] {
+    const args: Array<string> = [];
+    let remaining = command.trim();
 
-  include = Option.Array(`--include`, [], {
-    description: `An array of glob pattern idents; only matching workspaces will be traversed`,
-  });
+    const UNQUOTED_STRING = /^([^ \t\\]+)/;
+    const SINGLE_QUOTED_STRING = /^'([^'\\]+)'/;
+    const DOUBLE_QUOTED_STRING = /^"([^"\\]+)"/;
 
-  exclude = Option.Array(`--exclude`, [], {
-    description: `An array of glob pattern idents; matching workspaces won't be traversed`,
-  });
+    while (remaining.length > 0) {
+      const c = remaining[0];
+      let match;
+      if (c === `'`)
+        match = SINGLE_QUOTED_STRING.exec(remaining);
+      else if (c === `"`)
+        match = DOUBLE_QUOTED_STRING.exec(remaining);
+      else
+        match = UNQUOTED_STRING.exec(remaining);
 
-  publicOnly = Option.Boolean(`--no-private`, {
-    description: `Avoid running the command on private workspaces`,
-  });
 
-  commandName = Option.String();
-  args = Option.Proxy();
+      if (!match)
+        throw new UsageError(`could not parse command string ${command}`);
+
+      args.push(match[1]);
+
+      // TODO: Should be ban things like quotes immediately following quotes without whitespace?
+      remaining = remaining.slice(match[0].length).trimLeft();
+    }
+
+    if (args.length === 0)
+      throw new UsageError(`could not parse command string ${command}`);
+
+    // TODO: Make sure ** only comes at the end!
+    const scriptNamePattern = args[0].split(`:`).map(segment => {
+      if (segment === `**`) {
+        return STAR_STAR;
+      } else if (segment === `*`) {
+        return STAR;
+      } else if (segment.includes(`*`)) {
+        throw new UsageError(`could not parse script name ${args[0]}`);
+      } else {
+        return segment;
+      }
+    });
+
+    return [scriptNamePattern, args.slice(1)];
+  }
 
   async execute() {
     const configuration = await Configuration.find(this.context.cwd, this.context.plugins);
-    const {project, workspace: cwdWorkspace} = await Project.find(configuration, this.context.cwd);
+    const {project, workspace} = await Project.find(configuration, this.context.cwd);
 
-    if (!this.all && !cwdWorkspace)
-      throw new WorkspaceRequiredError(project.cwd, this.context.cwd);
+    if (!workspace)
+      // if we don't use workspaces, does the project devolve into the only workspace?
+      // is this okay? topLevelWorkspace?
+      throw new Error(`what`);
 
-    const command = this.cli.process([this.commandName, ...this.args]) as {path: Array<string>, scriptName?: string};
-    const scriptName = command.path.length === 1 && command.path[0] === `run` && typeof command.scriptName !== `undefined`
-      ? command.scriptName
-      : null;
 
-    if (command.path.length === 0)
-      throw new UsageError(`Invalid subcommand name for iteration - use the 'run' keyword if you wish to execute a script`);
+    const scripts = this.scriptsAndArgs.map(this.processScriptInvocation);
+    const scriptCandidates = [...workspace.manifest.scripts.keys()].map((k): [string, Array<string>] => [k, k.split(`:`)]);
 
-    const rootWorkspace = this.all
-      ? project.topLevelWorkspace
-      : cwdWorkspace!;
+    const resolvedScripts = scripts.flatMap(([scriptPattern, args]): Array<[string, Array<string>]> => {
+      const candidates = scriptCandidates
+        .filter(([_, scriptNameParts]) => {
+          if (scriptPattern.length > scriptNameParts.length) {
+            return false;
+          } else {
+            // TODO: This matching isn't quite right. Also it should be pulled out into a utility method for testing.
+            return scriptPattern.every((part, i) => part === scriptNameParts[i] || part === STAR || part === STAR_STAR);
+          }
+        })
+        .map(([name, _]) => name);
 
-    const fromPredicate = (workspace: Workspace) => micromatch.isMatch(structUtils.stringifyIdent(workspace.locator), this.from);
-    const fromCandidates: Array<Workspace> = this.from.length > 0
-      ? [rootWorkspace, ...rootWorkspace.getRecursiveWorkspaceChildren()].filter(fromPredicate)
-      : [rootWorkspace];
+      if (candidates.length === 0) {
+        throw new UsageError(`one of the patterns does not match`);
+      } else {
+        return candidates.map(c => [c, args]);
+      }
+    });
 
-    const candidates = this.recursive
-      ? [...fromCandidates, ...fromCandidates.map(candidate => [...candidate.getRecursiveWorkspaceDependencies()]).flat()]
-      : [...fromCandidates, ...fromCandidates.map(candidate => [...candidate.getRecursiveWorkspaceChildren()]).flat()];
+    // HERE IS WHERE I GOT TO
 
     const workspaces: Array<Workspace> = [];
 
