@@ -1,13 +1,13 @@
-import {BaseCommand, WorkspaceRequiredError}               from '@yarnpkg/cli';
-import {Configuration, LocatorHash, Project, Workspace}    from '@yarnpkg/core';
-import {DescriptorHash, MessageName, Report, StreamReport} from '@yarnpkg/core';
-import {formatUtils, miscUtils, structUtils}               from '@yarnpkg/core';
-import {Command, Option, Usage, UsageError}                from 'clipanion';
-import micromatch                                          from 'micromatch';
-import {cpus}                                              from 'os';
-import pLimit                                              from 'p-limit';
-import {Writable}                                          from 'stream';
-import * as t                                              from 'typanion';
+import {BaseCommand, WorkspaceRequiredError}                         from '@yarnpkg/cli';
+import {Configuration, LocatorHash, Project, scriptUtils, Workspace} from '@yarnpkg/core';
+import {DescriptorHash, MessageName, Report, StreamReport}           from '@yarnpkg/core';
+import {formatUtils, miscUtils, structUtils}                         from '@yarnpkg/core';
+import {Command, Option, Usage, UsageError}                          from 'clipanion';
+import micromatch                                                    from 'micromatch';
+import {cpus}                                                        from 'os';
+import pLimit                                                        from 'p-limit';
+import {Writable}                                                    from 'stream';
+import * as t                                                        from 'typanion';
 
 export const STAR = Symbol(`*`);
 export const STAR_STAR = Symbol(`**`);
@@ -50,35 +50,14 @@ export class RunallCommand extends BaseCommand {
       // is this okay? topLevelWorkspace?
       throw new Error(`what`);
 
-
     const scriptInvocations = this.delegateScriptCommands.map(_parseScriptInvocation);
+    const scriptNames = [...workspace.manifest.scripts.keys()];
     // n^2 but whatever...
-    const matchingScriptNames = [...workspace.manifest.scripts.keys()].filter(s => scriptInvocations.some(i => _matchesScript(i.pattern, s)));
+    const scriptsToRun = scriptInvocations.flatMap(invocation => {
+      return scriptNames.filter(s => _matchesScript(invocation.pattern, s)).map(s => [s, ...invocation.args]);
+    });
 
     // HERE IS WHERE I GOT TO
-
-    const workspaces: Array<Workspace> = [];
-
-    for (const workspace of candidates) {
-      if (scriptName && !workspace.manifest.scripts.has(scriptName) && !scriptName.includes(`:`))
-        continue;
-
-      // Prevents infinite loop in the case of configuring a script as such:
-      // "lint": "yarn workspaces foreach --all lint"
-      if (scriptName === process.env.npm_lifecycle_event && workspace.cwd === cwdWorkspace!.cwd)
-        continue;
-
-      if (this.include.length > 0 && !micromatch.isMatch(structUtils.stringifyIdent(workspace.locator), this.include))
-        continue;
-
-      if (this.exclude.length > 0 && micromatch.isMatch(structUtils.stringifyIdent(workspace.locator), this.exclude))
-        continue;
-
-      if (this.publicOnly && workspace.manifest.private === true)
-        continue;
-
-      workspaces.push(workspace);
-    }
 
     let interlaced = this.interlaced;
 
@@ -86,13 +65,9 @@ export class RunallCommand extends BaseCommand {
     if (!this.parallel)
       interlaced = true;
 
-    const needsProcessing = new Map<LocatorHash, Workspace>();
-    const processing = new Set<DescriptorHash>();
-
     const concurrency = this.parallel ? Math.max(1, cpus().length / 2) : 1;
     const limit = pLimit(this.jobs || concurrency);
 
-    let commandCount = 0;
     let finalExitCode: number | null = null;
 
     let abortNextCommands = false;
@@ -101,14 +76,14 @@ export class RunallCommand extends BaseCommand {
       configuration,
       stdout: this.context.stdout,
     }, async report => {
-      const runCommand = async (workspace: Workspace, {commandIndex}: {commandIndex: number}) => {
+      const runScript = async (script: Array<string>, {scriptIndex}: {scriptIndex: number}) => {
         if (abortNextCommands)
           return -1;
 
-        if (!this.parallel && this.verbose && commandIndex > 1)
+        if (!this.parallel && this.verbose && scriptIndex > 1)
           report.reportSeparator();
 
-        const prefix = getPrefix(workspace, {configuration, verbose: this.verbose, commandIndex});
+        const prefix = getPrefix(script[0], {configuration, verbose: this.verbose, scriptIndex});
 
         const [stdout, stdoutEnd] = createStream(report, {prefix, interlaced});
         const [stderr, stderrEnd] = createStream(report, {prefix, interlaced});
@@ -119,8 +94,12 @@ export class RunallCommand extends BaseCommand {
 
           const start = Date.now();
 
-          const exitCode = (await this.cli.run([this.commandName, ...this.args], {
+          // TODO: Should this be this.cli.run? Does that keep it in-process?
+          // TODO: Does keeping it in-process like this actually spin up other shells if necessary?
+          const exitCode = (await scriptUtils.executePackageScript(workspace.locator, script[0], script.slice(1), {
             cwd: workspace.cwd,
+            project,
+            stdin: null,
             stdout,
             stderr,
           })) || 0;
@@ -156,80 +135,31 @@ export class RunallCommand extends BaseCommand {
         }
       };
 
-      for (const workspace of workspaces)
-        needsProcessing.set(workspace.anchoredLocator.locatorHash, workspace);
-
-      while (needsProcessing.size > 0) {
-        if (report.hasErrors())
-          break;
-
-        const commandPromises = [];
-
-        for (const [identHash, workspace] of needsProcessing) {
-          // If we are already running the command on that workspace, skip
-          if (processing.has(workspace.anchoredDescriptor.descriptorHash))
-            continue;
-
-          let isRunnable = true;
-
-          if (this.topological || this.topologicalDev) {
-            const resolvedSet = this.topologicalDev
-              ? new Map([...workspace.manifest.dependencies, ...workspace.manifest.devDependencies])
-              : workspace.manifest.dependencies;
-
-            for (const descriptor of resolvedSet.values()) {
-              const workspace = project.tryWorkspaceByDescriptor(descriptor);
-              isRunnable = workspace === null || !needsProcessing.has(workspace.anchoredLocator.locatorHash);
-
-              if (!isRunnable) {
-                break;
-              }
+      // TODO: If this is parallel = 1, does it spin up another process anyway?
+      const scriptPromises = scriptsToRun.map((script, scriptIndex) =>
+        limit(async () => {
+          try {
+            return await runScript(script, {scriptIndex});
+          } catch (e) {
+            report.reportError(MessageName.EXCEPTION, e.stack || e.message);
+            if (this.continue) {
+              finalExitCode = 1;
+              return 0;
+            } else {
+              abortNextCommands = true;
+              return 1;
             }
           }
+        })
+      );
 
-          if (!isRunnable)
-            continue;
+      const exitCodes: Array<number> = await Promise.all(scriptPromises);
+      const errorCode = exitCodes.find(code => code !== 0);
 
-          processing.add(workspace.anchoredDescriptor.descriptorHash);
-
-          commandPromises.push(limit(async () => {
-            const exitCode = await runCommand(workspace, {
-              commandIndex: ++commandCount,
-            });
-
-            needsProcessing.delete(identHash);
-            processing.delete(workspace.anchoredDescriptor.descriptorHash);
-
-            return exitCode;
-          }));
-
-          // If we're not executing processes in parallel we can just wait for it
-          // to finish outside of this loop (it'll then reenter it anyway)
-          if (!this.parallel) {
-            break;
-          }
-        }
-
-        if (commandPromises.length === 0) {
-          const cycle = Array.from(needsProcessing.values()).map(workspace => {
-            return structUtils.prettyLocator(configuration, workspace.anchoredLocator);
-          }).join(`, `);
-
-          report.reportError(MessageName.CYCLIC_DEPENDENCIES, `Dependency cycle detected (${cycle})`);
-          return;
-        }
-
-        const exitCodes: Array<number> = await Promise.all(commandPromises);
-        const errorCode = exitCodes.find(code => code !== 0);
-
-        // The order in which the exit codes will be processed is fairly
-        // opaque, so better just return a generic "1" for determinism.
-        if (finalExitCode === null)
-          finalExitCode = typeof errorCode !== `undefined` ? 1 : finalExitCode;
-
-        if ((this.topological || this.topologicalDev) && typeof errorCode !== `undefined`) {
-          report.reportError(MessageName.UNNAMED, `The command failed for workspaces that are depended upon by other workspaces; can't satisfy the dependency graph`);
-        }
+      // The order in which the exit codes will be processed is fairly
+      // opaque, so better just return a generic "1" for determinism.
+      if (finalExitCode === null) {
+        finalExitCode = typeof errorCode !== `undefined` ? 1 : finalExitCode;
       }
     });
 
@@ -347,21 +277,18 @@ function createStream(report: Report, {prefix, interlaced}: {prefix: string | nu
 
 type GetPrefixOptions = {
   configuration: Configuration;
-  commandIndex: number;
+  scriptIndex: number;
   verbose: boolean;
 };
 
-function getPrefix(workspace: Workspace, {configuration, commandIndex, verbose}: GetPrefixOptions) {
+function getPrefix(scriptName: string, {configuration, scriptIndex, verbose}: GetPrefixOptions) {
   if (!verbose)
     return null;
 
-  const ident = structUtils.convertToIdent(workspace.locator);
-  const name = structUtils.stringifyIdent(ident);
-
-  const prefix = `[${name}]:`;
+  const prefix = `[${scriptName}]:`;
 
   const colors = [`#2E86AB`, `#A23B72`, `#F18F01`, `#C73E1D`, `#CCE2A3`];
-  const colorName = colors[commandIndex % colors.length];
+  const colorName = colors[scriptIndex % colors.length];
 
   return formatUtils.pretty(configuration, prefix, colorName);
 }
