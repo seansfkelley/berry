@@ -21,6 +21,7 @@ export const wrapScriptExecution: Required<Hooks>["wrapScriptExecution"] = async
     return executor;
 
   // TODO: Can we support yarn exec? What about implicit run (without the run keyword)?
+  // TODO: Can we support run-all?
 
   // I don't know if this is documented anywhere but you can see in the source that Yarn explicitly
   // supports calling `run` as an alias for `yarn run` in a script. This is done by the script

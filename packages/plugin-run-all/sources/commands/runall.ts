@@ -3,7 +3,6 @@ import {Configuration, LocatorHash, Project, scriptUtils, Workspace} from '@yarn
 import {DescriptorHash, MessageName, Report, StreamReport}           from '@yarnpkg/core';
 import {formatUtils, miscUtils, structUtils}                         from '@yarnpkg/core';
 import {Command, Option, Usage, UsageError}                          from 'clipanion';
-import micromatch                                                    from 'micromatch';
 import {cpus}                                                        from 'os';
 import pLimit                                                        from 'p-limit';
 import {Writable}                                                    from 'stream';
@@ -14,20 +13,36 @@ export const STAR_STAR = Symbol(`**`);
 
 export class RunallCommand extends BaseCommand {
   static paths = [
-    [`runall`],
     [`run-all`],
   ];
 
+  static usage: Usage = Command.Usage({
+    description: `run all matching scripts in a workspace`,
+    details: `
+      This command will run one or more scripts in a workspace.
+    `,
+    examples: [[
+      `Run a few scripts in the specified order`,
+      `yarn run-all clean build publish`,
+    ], [
+      `Run all scripts matching a simple glob even if they fail`,
+      `yarn run-all -c 'test:unit:*'`,
+    ], [
+      `Run all scripts and sub-scripts matching a double glob in parallel`,
+      `yarn run-all -p 'lint:**'`,
+    ]],
+  });
+
   continue = Option.Boolean(`-c,--continue`, false, {
-    // description: `Find packages via dependencies/devDependencies instead of using the workspaces field`,
+    description: `Keep running if a script fails`,
   });
 
   parallel = Option.Boolean(`-p,--parallel`, false, {
-    description: `Run the commands in parallel`,
+    description: `Run the script in parallel`,
   });
 
   verbose = Option.Boolean(`-v,--verbose`, false, {
-    description: `Prefix each output line with the name of the originating workspace`,
+    description: `Prefix each output line with the name of the originating script`,
   });
 
   interlaced = Option.Boolean(`-i,--interlaced`, false, {
@@ -39,34 +54,43 @@ export class RunallCommand extends BaseCommand {
     validator: t.applyCascade(t.isNumber(), [t.isInteger(), t.isAtLeast(2)]),
   });
 
-  delegateScriptCommands = Option.Proxy();
+  // The way options parsing is done, we have to have a "buffer" in between the Proxy argument
+  // and all the flags, else the proxy will eat everything.
+  scriptName = Option.String();
+  otherScriptNames = Option.Proxy();
 
   async execute() {
     const configuration = await Configuration.find(this.context.cwd, this.context.plugins);
     const {project, workspace} = await Project.find(configuration, this.context.cwd);
+
+    // This is definitely required otherwise it blows up, but I don't really know what it does.
+    // Borrowed from run.ts.
+    await project.restoreInstallState();
 
     if (!workspace)
       // if we don't use workspaces, does the project devolve into the only workspace?
       // is this okay? topLevelWorkspace?
       throw new Error(`what`);
 
-    const scriptInvocations = this.delegateScriptCommands.map(_parseScriptInvocation);
+    const scriptInvocations = [this.scriptName, ...this.otherScriptNames].map(_parseScriptInvocation);
     const scriptNames = [...workspace.manifest.scripts.keys()];
     // n^2 but whatever...
     const scriptsToRun = scriptInvocations.flatMap(invocation => {
       return scriptNames.filter(s => _matchesScript(invocation.pattern, s)).map(s => [s, ...invocation.args]);
     });
 
-    // HERE IS WHERE I GOT TO
+    const concurrency = this.jobs || (this.parallel ? Math.max(1, cpus().length / 2) : 1);
+
+    let parallel = this.parallel;
+    if (concurrency === 1 || scriptsToRun.length === 1)
+      parallel = false;
 
     let interlaced = this.interlaced;
-
     // No need to buffer the output if we're executing the commands sequentially
-    if (!this.parallel)
+    if (!parallel)
       interlaced = true;
 
-    const concurrency = this.parallel ? Math.max(1, cpus().length / 2) : 1;
-    const limit = pLimit(this.jobs || concurrency);
+    const limit = pLimit(concurrency);
 
     let finalExitCode: number | null = null;
 
@@ -80,7 +104,7 @@ export class RunallCommand extends BaseCommand {
         if (abortNextCommands)
           return -1;
 
-        if (!this.parallel && this.verbose && scriptIndex > 1)
+        if (!parallel && this.verbose && scriptIndex > 1)
           report.reportSeparator();
 
         const prefix = getPrefix(script[0], {configuration, verbose: this.verbose, scriptIndex});
@@ -94,15 +118,20 @@ export class RunallCommand extends BaseCommand {
 
           const start = Date.now();
 
-          // TODO: Should this be this.cli.run? Does that keep it in-process?
-          // TODO: Does keeping it in-process like this actually spin up other shells if necessary?
-          const exitCode = (await scriptUtils.executePackageScript(workspace.locator, script[0], script.slice(1), {
+          // Does this not spin up another process unless it has to?
+          const exitCode = (await this.cli.run(script, {
             cwd: workspace.cwd,
-            project,
-            stdin: null,
             stdout,
             stderr,
           })) || 0;
+
+          // const exitCode = (await scriptUtils.executePackageScript(workspace.locator, script[0], script.slice(1), {
+          //   cwd: workspace.cwd,
+          //   project,
+          //   stdin: null,
+          //   stdout,
+          //   stderr,
+          // })) || 0;
 
           stdout.end();
           stderr.end();
@@ -135,7 +164,6 @@ export class RunallCommand extends BaseCommand {
         }
       };
 
-      // TODO: If this is parallel = 1, does it spin up another process anyway?
       const scriptPromises = scriptsToRun.map((script, scriptIndex) =>
         limit(async () => {
           try {
