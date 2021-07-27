@@ -1,10 +1,10 @@
 import {Plugin}        from '@yarnpkg/core';
 
-import {RunallCommand} from "./commands/runall";
+import {RunAllCommand} from "./commands/run-all";
 
 const plugin: Plugin = {
   commands: [
-    RunallCommand,
+    RunAllCommand,
   ],
 };
 

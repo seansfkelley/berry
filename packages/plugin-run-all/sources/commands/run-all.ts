@@ -1,17 +1,17 @@
-import {BaseCommand, WorkspaceRequiredError}                         from '@yarnpkg/cli';
-import {Configuration, LocatorHash, Project, scriptUtils, Workspace} from '@yarnpkg/core';
-import {DescriptorHash, MessageName, Report, StreamReport}           from '@yarnpkg/core';
-import {formatUtils, miscUtils, structUtils}                         from '@yarnpkg/core';
-import {Command, Option, Usage, UsageError}                          from 'clipanion';
-import {cpus}                                                        from 'os';
-import pLimit                                                        from 'p-limit';
-import {Writable}                                                    from 'stream';
-import * as t                                                        from 'typanion';
+import {BaseCommand, WorkspaceRequiredError} from '@yarnpkg/cli';
+import {Configuration, Project}              from '@yarnpkg/core';
+import {MessageName, Report, StreamReport}   from '@yarnpkg/core';
+import {formatUtils, miscUtils}              from '@yarnpkg/core';
+import {Command, Option, Usage, UsageError}  from 'clipanion';
+import {cpus}                                from 'os';
+import pLimit                                from 'p-limit';
+import {Writable}                            from 'stream';
+import * as t                                from 'typanion';
 
 export const STAR = Symbol(`*`);
 export const STAR_STAR = Symbol(`**`);
 
-export class RunallCommand extends BaseCommand {
+export class RunAllCommand extends BaseCommand {
   static paths = [
     [`run-all`],
   ];
@@ -38,7 +38,7 @@ export class RunallCommand extends BaseCommand {
   });
 
   parallel = Option.Boolean(`-p,--parallel`, false, {
-    description: `Run the script in parallel`,
+    description: `Run the scripts in parallel`,
   });
 
   verbose = Option.Boolean(`-v,--verbose`, false, {
@@ -46,7 +46,7 @@ export class RunallCommand extends BaseCommand {
   });
 
   interlaced = Option.Boolean(`-i,--interlaced`, false, {
-    description: `Print the output of commands in real-time instead of buffering it`,
+    description: `Print the output of scripts in real-time instead of buffering it`,
   });
 
   jobs = Option.String(`-j,--jobs`, {
@@ -68,9 +68,7 @@ export class RunallCommand extends BaseCommand {
     await project.restoreInstallState();
 
     if (!workspace)
-      // if we don't use workspaces, does the project devolve into the only workspace?
-      // is this okay? topLevelWorkspace?
-      throw new Error(`what`);
+      throw new WorkspaceRequiredError(project.cwd, this.context.cwd);
 
     const scriptInvocations = [this.scriptName, ...this.otherScriptNames].map(_parseScriptInvocation);
     const scriptNames = [...workspace.manifest.scripts.keys()];
@@ -238,7 +236,7 @@ export function _parseScriptInvocation(command: string): ScriptInvocation {
 
 
   // TODO: Scripts can be given arguments by putting the whole in quotes, like `yarn run-all "script --args"
-  // how to parse? The below is not sufficient.
+  // how to parse? The below is not sufficient because it only looks at args[0].
   const pattern = args[0].split(`:`).map(segment => {
     if (segment === `**`) {
       return STAR_STAR;
