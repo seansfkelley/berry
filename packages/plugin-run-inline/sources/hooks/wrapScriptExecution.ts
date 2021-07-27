@@ -20,9 +20,14 @@ export const wrapScriptExecution: Required<Hooks>["wrapScriptExecution"] = async
   if (!parsedCommand || parsedCommand.length === 1)
     return executor;
 
-  // TODO: Can we support yarn exec? What about implicit run (without the run keyword)?
-  // TODO: Can we support run-all?
+  // TODO: Should we intercept `yarn exec` as well?
+  // TODO: Should we intercept implicit run (with a script name only, no `run` stated)?
+  // TODO: How can we reach out and delegate to `run-all`?
 
+  // Ideally, we could call `cli.run` and have this run in-process and all the interpretation Just
+  // Work, but unfortunately, the hook doesn't receive the CLI object, so we have to reach down a
+  // level and mimick some of the relevant behavior of `yarn run`'s implementation.
+  //
   // I don't know if this is documented anywhere but you can see in the source that Yarn explicitly
   // supports calling `run` as an alias for `yarn run` in a script. This is done by the script
   // runtime putting one-line shell scripts at the beginning of $PATH, including `node`, `yarn` and

@@ -118,20 +118,19 @@ export class RunallCommand extends BaseCommand {
 
           const start = Date.now();
 
-          // Does this not spin up another process unless it has to?
-          const exitCode = (await this.cli.run(script, {
+          // This runs the `run` command in-process. That command, in turn, may or may not spawn
+          // another process. This follows the some structure as `workspaces foreach`, which it is
+          // a heavily modified form of. In general, scripts may go through a couple layers of
+          // `yarn run other-script`, but will bottom out with short-to-run snippets that are run
+          // in-process (e.g. `cd foo && echo bar`) or by shelling out to another executable (e.g.
+          // `yarn run eslint` or `yarn exec foo bar`). In short: while this theoretically runs the
+          // risk of slamming the process by doing a huge amount of work without shelling out, in
+          // practice, it doesn't happen due to the architecture of Yarn and its task-running.
+          const exitCode = (await this.cli.run([`run`, ...script], {
             cwd: workspace.cwd,
             stdout,
             stderr,
           })) || 0;
-
-          // const exitCode = (await scriptUtils.executePackageScript(workspace.locator, script[0], script.slice(1), {
-          //   cwd: workspace.cwd,
-          //   project,
-          //   stdin: null,
-          //   stdout,
-          //   stderr,
-          // })) || 0;
 
           stdout.end();
           stderr.end();
