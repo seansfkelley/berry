@@ -9,8 +9,8 @@ import pLimit                                              from 'p-limit';
 import {Writable}                                          from 'stream';
 import * as t                                              from 'typanion';
 
-const STAR = Symbol(`*`);
-const STAR_STAR = Symbol(`**`);
+export const STAR = Symbol(`*`);
+export const STAR_STAR = Symbol(`**`);
 
 export class RunallCommand extends BaseCommand {
   static paths = [
@@ -39,54 +39,7 @@ export class RunallCommand extends BaseCommand {
     validator: t.applyCascade(t.isNumber(), [t.isInteger(), t.isAtLeast(2)]),
   });
 
-  scriptsAndArgs = Option.Proxy();
-
-  private processScriptInvocation(command: string): [Array<string | typeof STAR | typeof STAR_STAR>, Array<string>] {
-    const args: Array<string> = [];
-    let remaining = command.trim();
-
-    const UNQUOTED_STRING = /^([^ \t\\]+)/;
-    const SINGLE_QUOTED_STRING = /^'([^'\\]+)'/;
-    const DOUBLE_QUOTED_STRING = /^"([^"\\]+)"/;
-
-    while (remaining.length > 0) {
-      const c = remaining[0];
-      let match;
-      if (c === `'`)
-        match = SINGLE_QUOTED_STRING.exec(remaining);
-      else if (c === `"`)
-        match = DOUBLE_QUOTED_STRING.exec(remaining);
-      else
-        match = UNQUOTED_STRING.exec(remaining);
-
-
-      if (!match)
-        throw new UsageError(`could not parse command string ${command}`);
-
-      args.push(match[1]);
-
-      // TODO: Should be ban things like quotes immediately following quotes without whitespace?
-      remaining = remaining.slice(match[0].length).trimLeft();
-    }
-
-    if (args.length === 0)
-      throw new UsageError(`could not parse command string ${command}`);
-
-    // TODO: Make sure ** only comes at the end!
-    const scriptNamePattern = args[0].split(`:`).map(segment => {
-      if (segment === `**`) {
-        return STAR_STAR;
-      } else if (segment === `*`) {
-        return STAR;
-      } else if (segment.includes(`*`)) {
-        throw new UsageError(`could not parse script name ${args[0]}`);
-      } else {
-        return segment;
-      }
-    });
-
-    return [scriptNamePattern, args.slice(1)];
-  }
+  delegateScriptCommands = Option.Proxy();
 
   async execute() {
     const configuration = await Configuration.find(this.context.cwd, this.context.plugins);
@@ -98,27 +51,9 @@ export class RunallCommand extends BaseCommand {
       throw new Error(`what`);
 
 
-    const scripts = this.scriptsAndArgs.map(this.processScriptInvocation);
-    const scriptCandidates = [...workspace.manifest.scripts.keys()].map((k): [string, Array<string>] => [k, k.split(`:`)]);
-
-    const resolvedScripts = scripts.flatMap(([scriptPattern, args]): Array<[string, Array<string>]> => {
-      const candidates = scriptCandidates
-        .filter(([_, scriptNameParts]) => {
-          if (scriptPattern.length > scriptNameParts.length) {
-            return false;
-          } else {
-            // TODO: This matching isn't quite right. Also it should be pulled out into a utility method for testing.
-            return scriptPattern.every((part, i) => part === scriptNameParts[i] || part === STAR || part === STAR_STAR);
-          }
-        })
-        .map(([name, _]) => name);
-
-      if (candidates.length === 0) {
-        throw new UsageError(`one of the patterns does not match`);
-      } else {
-        return candidates.map(c => [c, args]);
-      }
-    });
+    const scriptInvocations = this.delegateScriptCommands.map(_parseScriptInvocation);
+    // n^2 but whatever...
+    const matchingScriptNames = [...workspace.manifest.scripts.keys()].filter(s => scriptInvocations.some(i => _matchesScript(i.pattern, s)));
 
     // HERE IS WHERE I GOT TO
 
@@ -303,6 +238,82 @@ export class RunallCommand extends BaseCommand {
     } else {
       return report.exitCode();
     }
+  }
+}
+
+type ScriptPattern = Array<string | typeof STAR | typeof STAR_STAR>;
+
+interface ScriptInvocation {
+  pattern: ScriptPattern
+  args: Array<string>;
+}
+
+export function _parseScriptInvocation(command: string): ScriptInvocation {
+  const args: Array<string> = [];
+  let remaining = command.trim();
+
+  const UNQUOTED_STRING = /^([^ \t\\]+)/;
+  const SINGLE_QUOTED_STRING = /^'([^'\\]+)'/;
+  const DOUBLE_QUOTED_STRING = /^"([^"\\]+)"/;
+
+  while (remaining.length > 0) {
+    const c = remaining[0];
+    let match;
+    if (c === `'`)
+      match = SINGLE_QUOTED_STRING.exec(remaining);
+    else if (c === `"`)
+      match = DOUBLE_QUOTED_STRING.exec(remaining);
+    else
+      match = UNQUOTED_STRING.exec(remaining);
+
+
+    if (!match)
+      throw new UsageError(`illegal command string for runall: ${command}`);
+
+    args.push(match[1]);
+
+    // TODO: Should be ban things like quotes immediately following quotes without whitespace?
+    remaining = remaining.slice(match[0].length).trimLeft();
+  }
+
+  if (args.length === 0)
+    throw new UsageError(`runall requires at least one script name or glob`);
+
+
+  // TODO: Scripts can be given arguments by putting the whole in quotes, like `yarn run-all "script --args"
+  // how to parse? The below is not sufficient.
+  const pattern = args[0].split(`:`).map(segment => {
+    if (segment === `**`) {
+      return STAR_STAR;
+    } else if (segment === `*`) {
+      return STAR;
+    } else if (segment.includes(`*`)) {
+      throw new UsageError(`cannot use * alongside other characters in ${args[0]}`);
+    } else {
+      return segment;
+    }
+  });
+
+  const firstStarStar = pattern.indexOf(STAR_STAR);
+  if (firstStarStar !== -1 && firstStarStar < pattern.length - 1)
+    throw new UsageError(`a ** can only appear at the end of a pattern`);
+
+  return {pattern, args: args.slice(1)};
+}
+
+export function _matchesScript(pattern: ScriptPattern, scriptName: string) {
+  const scriptNameParts = scriptName.split(`:`);
+  if (pattern.length > scriptNameParts.length) {
+    return false;
+  } else {
+    const matchesUpToPatternLength = pattern.every((patternPart, i) => {
+      const namePart = scriptNameParts[i];
+      return patternPart === namePart || patternPart === STAR || patternPart === STAR_STAR;
+    });
+    return matchesUpToPatternLength && (
+      pattern.length === scriptNameParts.length ||
+      pattern[pattern.length - 1] === STAR_STAR
+    );
   }
 }
 
