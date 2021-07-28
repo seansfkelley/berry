@@ -1,15 +1,13 @@
 import {BaseCommand, WorkspaceRequiredError} from '@yarnpkg/cli';
-import {Configuration, Project}              from '@yarnpkg/core';
-import {MessageName, Report, StreamReport}   from '@yarnpkg/core';
 import {formatUtils, miscUtils}              from '@yarnpkg/core';
+import {MessageName, Report, StreamReport}   from '@yarnpkg/core';
+import {Configuration, Project}              from '@yarnpkg/core';
 import {Command, Option, Usage, UsageError}  from 'clipanion';
+import micromatch                            from "micromatch";
 import {cpus}                                from 'os';
 import pLimit                                from 'p-limit';
 import {Writable}                            from 'stream';
 import * as t                                from 'typanion';
-
-export const STAR = Symbol(`*`);
-export const STAR_STAR = Symbol(`**`);
 
 export class RunAllCommand extends BaseCommand {
   static paths = [
@@ -20,21 +18,31 @@ export class RunAllCommand extends BaseCommand {
     description: `run all matching scripts in a workspace`,
     details: `
       This command will run one or more scripts in a workspace.
+
+      - If \`-p,--parallel\` is set, the commands will be ran in parallel; they'll by default be limited to a number of parallel tasks equal to your available cores minus one, but that can be overridden via \`-j,--jobs\`.
+
+      - If \`-p,--parallel\` and \`-i,--interlaced\` are both set, Yarn will print the lines from the output as it receives them. If \`-i,--interlaced\` wasn't set, it would instead buffer the output from each process and print the resulting buffers only after their source processes have exited.
+
+      - If \`-c,--continue\` is set, scripts that exit non-zero won't immediately cause run-all to exit, but it will continue to run all other matching tasks. In this case, run-all will still eventually exit non-zero.
+
+      Adding the \`-v,--verbose\` flag will cause Yarn to print more information; in particular the name of the script that generated the output will be printed at the front of each line.
+
+      If no scripts match a particular glob, the glob will be ignored without error.
     `,
     examples: [[
       `Run a few scripts in the specified order`,
       `yarn run-all clean build publish`,
     ], [
-      `Run all scripts matching a simple glob even if they fail`,
-      `yarn run-all -c 'test:unit:*'`,
+      `Run all scripts matching simple globs even if they fail`,
+      `yarn run-all -c 'test:unit:*' 'test:integration:*`,
     ], [
-      `Run all scripts and sub-scripts matching a double glob in parallel`,
-      `yarn run-all -p 'lint:**'`,
+      `Run all scripts and sub-scripts matching a double glob in parallel without buffering output`,
+      `yarn run-all -pi 'test:**'`,
     ]],
   });
 
   continue = Option.Boolean(`-c,--continue`, false, {
-    description: `Keep running if a script fails`,
+    description: `Keep running other scripts if a script exits non-zero`,
   });
 
   parallel = Option.Boolean(`-p,--parallel`, false, {
@@ -49,9 +57,9 @@ export class RunAllCommand extends BaseCommand {
     description: `Print the output of scripts in real-time instead of buffering it`,
   });
 
-  jobs = Option.String(`-j,--jobs`, {
-    description: `The maximum number of parallel tasks that the execution will be limited to`,
-    validator: t.applyCascade(t.isNumber(), [t.isInteger(), t.isAtLeast(2)]),
+  jobs = Option.String(`-j,--jobs`, `${Math.max(1, cpus().length - 1)}`, {
+    description: `The maximum number of concurrent tasks (0 for unlimited)`,
+    validator: t.applyCascade(t.isNumber(), [t.isInteger(), t.isAtLeast(0)]),
   });
 
   // The way options parsing is done, we have to have a "buffer" in between the Proxy argument
@@ -74,10 +82,11 @@ export class RunAllCommand extends BaseCommand {
     const scriptNames = [...workspace.manifest.scripts.keys()];
     // n^2 but whatever...
     const scriptsToRun = scriptInvocations.flatMap(invocation => {
-      return scriptNames.filter(s => _matchesScript(invocation.pattern, s)).map(s => [s, ...invocation.args]);
+      const isMatch = micromatch.matcher(swapColonAndSlash(invocation.pattern));
+      return scriptNames.filter(s => isMatch(swapColonAndSlash(s))).map(s => [s, ...invocation.args]);
     });
 
-    const concurrency = this.jobs || (this.parallel ? Math.max(1, cpus().length / 2) : 1);
+    const concurrency = this.parallel ? (this.jobs === 0 ? Infinity : this.jobs) : 1;
 
     let parallel = this.parallel;
     if (concurrency === 1 || scriptsToRun.length === 1)
@@ -112,7 +121,7 @@ export class RunAllCommand extends BaseCommand {
 
         try {
           if (this.verbose)
-            report.reportInfo(null, `${prefix} Process started`);
+            report.reportInfo(null, `${prefix} Script started`);
 
           const start = Date.now();
 
@@ -139,7 +148,7 @@ export class RunAllCommand extends BaseCommand {
           const end = Date.now();
           if (this.verbose) {
             const timerMessage = configuration.get(`enableTimers`) ? `, completed in ${formatUtils.pretty(configuration, end - start, formatUtils.Type.DURATION)}` : ``;
-            report.reportInfo(null, `${prefix} Process exited (exit code ${exitCode})${timerMessage}`);
+            report.reportInfo(null, `${prefix} Script finished (exit code ${exitCode})${timerMessage}`);
           }
 
           if (exitCode === 130) {
@@ -167,23 +176,19 @@ export class RunAllCommand extends BaseCommand {
             return await runScript(script, {scriptIndex});
           } catch (e) {
             report.reportError(MessageName.EXCEPTION, e.stack || e.message);
-            if (this.continue) {
-              finalExitCode = 1;
-              return 0;
-            } else {
+            if (!this.continue)
               abortNextCommands = true;
-              return 1;
-            }
+            return 1;
           }
         })
       );
 
       const exitCodes: Array<number> = await Promise.all(scriptPromises);
-      const errorCode = exitCodes.find(code => code !== 0);
 
       // The order in which the exit codes will be processed is fairly
       // opaque, so better just return a generic "1" for determinism.
       if (finalExitCode === null) {
+        const errorCode = exitCodes.find(code => code !== 0);
         finalExitCode = typeof errorCode !== `undefined` ? 1 : finalExitCode;
       }
     });
@@ -196,10 +201,8 @@ export class RunAllCommand extends BaseCommand {
   }
 }
 
-type ScriptPattern = Array<string | typeof STAR | typeof STAR_STAR>;
-
 interface ScriptInvocation {
-  pattern: ScriptPattern
+  pattern: string;
   args: Array<string>;
 }
 
@@ -234,44 +237,14 @@ export function _parseScriptInvocation(command: string): ScriptInvocation {
   if (args.length === 0)
     throw new UsageError(`runall requires at least one script name or glob`);
 
-
-  // TODO: Scripts can be given arguments by putting the whole in quotes, like `yarn run-all "script --args"
-  // how to parse? The below is not sufficient because it only looks at args[0].
-  const pattern = args[0].split(`:`).map(segment => {
-    if (segment === `**`) {
-      return STAR_STAR;
-    } else if (segment === `*`) {
-      return STAR;
-    } else if (segment.includes(`*`)) {
-      throw new UsageError(`cannot use * alongside other characters in ${args[0]}`);
-    } else {
-      return segment;
-    }
-  });
-
-  const firstStarStar = pattern.indexOf(STAR_STAR);
-  if (firstStarStar !== -1 && firstStarStar < pattern.length - 1)
-    throw new UsageError(`a ** can only appear at the end of a pattern`);
-
-  return {pattern, args: args.slice(1)};
+  return {pattern: args[0], args: args.slice(1)};
 }
 
-export function _matchesScript(pattern: ScriptPattern, scriptName: string) {
-  const scriptNameParts = scriptName.split(`:`);
-  if (pattern.length > scriptNameParts.length) {
-    return false;
-  } else {
-    const matchesUpToPatternLength = pattern.every((patternPart, i) => {
-      const namePart = scriptNameParts[i];
-      return patternPart === namePart || patternPart === STAR || patternPart === STAR_STAR;
-    });
-    return matchesUpToPatternLength && (
-      pattern.length === scriptNameParts.length ||
-      pattern[pattern.length - 1] === STAR_STAR
-    );
-  }
+// Colons behave like file path separators for tasks, so exchange their roles and we can use
+// micromatch as if it actually is a file path.
+function swapColonAndSlash(s: string) {
+  return s.replace(/[:/]/g, c => c === `:` ? `/` : `:`);
 }
-
 
 function createStream(report: Report, {prefix, interlaced}: {prefix: string | null, interlaced: boolean}): [Writable, Promise<boolean>] {
   const streamReporter = report.createStreamReporter(prefix);
