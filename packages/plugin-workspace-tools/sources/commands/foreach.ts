@@ -1,13 +1,14 @@
-import {BaseCommand, WorkspaceRequiredError}               from '@yarnpkg/cli';
-import {Configuration, LocatorHash, Project, Workspace}    from '@yarnpkg/core';
-import {DescriptorHash, MessageName, Report, StreamReport} from '@yarnpkg/core';
-import {formatUtils, miscUtils, structUtils}               from '@yarnpkg/core';
-import {Command, Option, Usage, UsageError}                from 'clipanion';
-import micromatch                                          from 'micromatch';
-import {cpus}                                              from 'os';
-import pLimit                                              from 'p-limit';
-import {Writable}                                          from 'stream';
-import * as t                                              from 'typanion';
+import {BaseCommand, WorkspaceRequiredError}                       from '@yarnpkg/cli';
+import {Configuration, execUtils, LocatorHash, Project, Workspace} from '@yarnpkg/core';
+import {DescriptorHash, MessageName, Report, StreamReport}         from '@yarnpkg/core';
+import {formatUtils, miscUtils, structUtils}                       from '@yarnpkg/core';
+import {ppath, toFilename}                                         from '@yarnpkg/fslib';
+import {Command, Option, Usage, UsageError}                        from 'clipanion';
+import micromatch                                                  from 'micromatch';
+import {cpus}                                                      from 'os';
+import pLimit                                                      from 'p-limit';
+import {Writable}                                                  from 'stream';
+import * as t                                                      from 'typanion';
 
 // eslint-disable-next-line arca/no-default-export
 export default class WorkspacesForeachCommand extends BaseCommand {
@@ -34,6 +35,8 @@ export default class WorkspacesForeachCommand extends BaseCommand {
       - If \`--from\` is set, Yarn will use the packages matching the 'from' glob as the starting point for any recursive search.
 
       - The command may apply to only some workspaces through the use of \`--include\` which acts as a whitelist. The \`--exclude\` flag will do the opposite and will be a list of packages that mustn't execute the script. Both flags accept glob patterns (if valid Idents and supported by [micromatch](https://github.com/micromatch/micromatch)). Make sure to escape the patterns, to prevent your own shell from trying to expand them.
+
+      - If \`--since\` is set, Yarn will run \`git diff\` against the specified commit-ish and select the workspaces that have had changes. \`--since\` is lower-priority than both \`--include\` and \`--exclude\`. It is an error to use it in combination with \`--from\`.
 
       Adding the \`-v,--verbose\` flag will cause Yarn to print more information; in particular the name of the workspace that generated the output will be printed at the front of each line.
 
@@ -100,6 +103,10 @@ export default class WorkspacesForeachCommand extends BaseCommand {
     description: `An array of glob pattern idents; matching workspaces won't be traversed`,
   });
 
+  since = Option.String(`--since`, {
+    description: `A Git commit-ish; select workspaces with changes since`,
+  });
+
   publicOnly = Option.Boolean(`--no-private`, {
     description: `Avoid running the command on private workspaces`,
   });
@@ -114,6 +121,9 @@ export default class WorkspacesForeachCommand extends BaseCommand {
     if (!this.all && !cwdWorkspace)
       throw new WorkspaceRequiredError(project.cwd, this.context.cwd);
 
+    if (this.from.length > 0 && this.since != null)
+      throw new UsageError(`Cannot provide both --from and --since`);
+
     const command = this.cli.process([this.commandName, ...this.args]) as {path: Array<string>, scriptName?: string};
     const scriptName = command.path.length === 1 && command.path[0] === `run` && typeof command.scriptName !== `undefined`
       ? command.scriptName
@@ -126,14 +136,34 @@ export default class WorkspacesForeachCommand extends BaseCommand {
       ? project.topLevelWorkspace
       : cwdWorkspace!;
 
-    const fromPredicate = (workspace: Workspace) => micromatch.isMatch(structUtils.stringifyIdent(workspace.locator), this.from);
-    const fromCandidates: Array<Workspace> = this.from.length > 0
-      ? [rootWorkspace, ...rootWorkspace.getRecursiveWorkspaceChildren()].filter(fromPredicate)
-      : [rootWorkspace];
-
-    const candidates = this.recursive
-      ? [...fromCandidates, ...fromCandidates.map(candidate => [...candidate.getRecursiveWorkspaceDependencies()]).flat()]
-      : [...fromCandidates, ...fromCandidates.map(candidate => [...candidate.getRecursiveWorkspaceChildren()]).flat()];
+    let candidates: Set<Workspace>;
+    if (this.from.length > 0) {
+      const fromPredicate = (workspace: Workspace) => micromatch.isMatch(structUtils.stringifyIdent(workspace.locator), this.from);
+      const entryPoints = [rootWorkspace, ...rootWorkspace.getRecursiveWorkspaceChildren()].filter(fromPredicate);
+      candidates = this.recursive
+        ? new Set([...entryPoints, ...entryPoints.map(candidate => [...candidate.getRecursiveWorkspaceDependencies()]).flat()])
+        // TODO: is this a bug in the original implementation? does it make sense to get the children here?
+        : new Set([...entryPoints, ...entryPoints.map(candidate => [...candidate.getRecursiveWorkspaceChildren()]).flat()]);
+    } else if (this.since) {
+      const {stdout} = await execUtils.execvp(`git`, [`diff`, `--name-only`, this.since, `--`, `.`], {cwd: rootWorkspace.cwd});
+      // TODO: does this make these all full paths such that startswith works?
+      const files = stdout.trim().split(`\n`).map(f => ppath.join(rootWorkspace.cwd, f as any));
+      // TODO error handling
+      // gogo gadget n^2
+      // TODO: should this be ppath.contains?
+      const sincePredicate = (workspace: Workspace) => {
+        const which  = files.filter(f =>  f.startsWith(workspace.cwd));
+        return which.length > 0;
+      };
+      const entryPoints = [rootWorkspace, ...rootWorkspace.getRecursiveWorkspaceChildren()].filter(sincePredicate);
+      candidates = this.recursive ?
+        new Set([...entryPoints, ...entryPoints.map(candidate => [...candidate.getRecursiveWorkspaceDependencies()]).flat()])
+        : new Set(entryPoints);
+    } else {
+      candidates = this.recursive
+        ? rootWorkspace.getRecursiveWorkspaceDependencies()
+        : new Set(rootWorkspace.getRecursiveWorkspaceChildren());
+    }
 
     const workspaces: Array<Workspace> = [];
 
