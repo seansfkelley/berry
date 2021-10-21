@@ -41,6 +41,9 @@ export default class BuildPluginCommand extends Command {
     ], [
       `Build a local development plugin`,
       `$0 build plugin --no-minify`,
+    ], [
+      `Build a plugin to a specified directory`,
+      `$0 build plugin --out-dir plugins/`,
     ]],
   });
 
@@ -52,6 +55,10 @@ export default class BuildPluginCommand extends Command {
     description: `Includes a source map in the bundle`,
   });
 
+  outDir = Option.String(`--out-dir`, `bundles`, {
+    description: `Directory to output built plugin to`,
+  });
+
   async execute() {
     const basedir = process.cwd();
     const portableBaseDir = npath.toPortablePath(basedir);
@@ -60,7 +67,7 @@ export default class BuildPluginCommand extends Command {
     const {name: rawName, main} = require(`${basedir}/package.json`);
     const name = getNormalizedName(rawName);
     const prettyName = structUtils.prettyIdent(configuration, structUtils.parseIdent(name));
-    const output = path.join(basedir, `bundles/${name}.js`);
+    const output = path.join(basedir, this.outDir, `${name}.js`);
 
     await xfs.mkdirPromise(npath.toPortablePath(path.dirname(output)), {recursive: true});
 
