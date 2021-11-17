@@ -1,7 +1,7 @@
 import {CwdFS, Filename, NativePath, PortablePath, ZipOpenFS} from '@yarnpkg/fslib';
 import {xfs, npath, ppath, toFilename}                        from '@yarnpkg/fslib';
 import {getLibzipPromise}                                     from '@yarnpkg/libzip';
-import {execute}                                              from '@yarnpkg/shell';
+import {execute, ShellBuiltin}                                from '@yarnpkg/shell';
 import capitalize                                             from 'lodash/capitalize';
 import pLimit                                                 from 'p-limit';
 import {PassThrough, Readable, Writable}                      from 'stream';
@@ -336,15 +336,43 @@ export async function hasPackageScript(locator: Locator, scriptName: string, {pr
   });
 }
 
+export type RunYarnContext = {
+  cwd: PortablePath,
+  stdin: Readable,
+  stdout: Writable,
+  stderr: Writable,
+  environment: {[key: string]: string},
+};
+
+export type RunYarn = (args: Array<string>, context: RunYarnContext) => Promise<number>;
+
+function runYarnToShellBuiltins(runYarn?: RunYarn): {[key: string]: ShellBuiltin} {
+  if (!runYarn)
+    return {};
+
+  const yarn: ShellBuiltin = (args, opts, state) => {
+    return runYarn(args, {
+      cwd: state.cwd,
+      stdin: state.stdin,
+      stdout: state.stdout,
+      stderr: state.stderr,
+      environment: state.environment,
+    });
+  };
+
+  return {yarn};
+}
+
 type ExecutePackageScriptOptions = {
   cwd?: PortablePath | undefined,
   project: Project,
   stdin: Readable | null,
   stdout: Writable,
   stderr: Writable,
+  runYarn?: RunYarn,
 };
 
-export async function executePackageScript(locator: Locator, scriptName: string, args: Array<string>, {cwd, project, stdin, stdout, stderr}: ExecutePackageScriptOptions): Promise<number> {
+export async function executePackageScript(locator: Locator, scriptName: string, args: Array<string>, {cwd, project, stdin, stdout, stderr, runYarn}: ExecutePackageScriptOptions): Promise<number> {
   return await xfs.mktempPromise(async binFolder => {
     const {manifest, env, cwd: realCwd} = await initializePackageEnvironment(locator, {project, binFolder, cwd, lifecycleScript: scriptName});
 
@@ -353,7 +381,7 @@ export async function executePackageScript(locator: Locator, scriptName: string,
       return 1;
 
     const realExecutor = async () => {
-      return await execute(script, args, {cwd: realCwd, env, stdin, stdout, stderr});
+      return await execute(script, args, {cwd: realCwd, env, stdin, stdout, stderr, builtins: runYarnToShellBuiltins(runYarn)});
     };
 
     const executor = await project.configuration.reduceHook(hooks => {
@@ -366,11 +394,11 @@ export async function executePackageScript(locator: Locator, scriptName: string,
   });
 }
 
-export async function executePackageShellcode(locator: Locator, command: string, args: Array<string>, {cwd, project, stdin, stdout, stderr}: ExecutePackageScriptOptions) {
+export async function executePackageShellcode(locator: Locator, command: string, args: Array<string>, {cwd, project, stdin, stdout, stderr, runYarn}: ExecutePackageScriptOptions) {
   return await xfs.mktempPromise(async binFolder => {
     const {env, cwd: realCwd} = await initializePackageEnvironment(locator, {project, binFolder, cwd});
 
-    return await execute(command, args, {cwd: realCwd, env, stdin, stdout, stderr});
+    return await execute(command, args, {cwd: realCwd, env, stdin, stdout, stderr, builtins: runYarnToShellBuiltins(runYarn)});
   });
 }
 
@@ -454,10 +482,11 @@ type ExecuteWorkspaceScriptOptions = {
   stdin: Readable | null,
   stdout: Writable,
   stderr: Writable,
+  runYarn?: RunYarn,
 };
 
-export async function executeWorkspaceScript(workspace: Workspace, scriptName: string, args: Array<string>, {cwd, stdin, stdout, stderr}: ExecuteWorkspaceScriptOptions) {
-  return await executePackageScript(workspace.anchoredLocator, scriptName, args, {cwd, project: workspace.project, stdin, stdout, stderr});
+export async function executeWorkspaceScript(workspace: Workspace, scriptName: string, args: Array<string>, {cwd, stdin, stdout, stderr, runYarn}: ExecuteWorkspaceScriptOptions) {
+  return await executePackageScript(workspace.anchoredLocator, scriptName, args, {cwd, project: workspace.project, stdin, stdout, stderr, runYarn});
 }
 
 export function hasWorkspaceScript(workspace: Workspace, scriptName: string) {

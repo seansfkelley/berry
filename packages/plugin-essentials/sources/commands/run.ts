@@ -1,4 +1,5 @@
 import {BaseCommand, pluginCommands}        from '@yarnpkg/cli';
+import {RunYarn}                            from '@yarnpkg/core/sources/scriptUtils';
 import {Configuration, Project, Workspace}  from '@yarnpkg/core';
 import {scriptUtils, structUtils}           from '@yarnpkg/core';
 import {Command, Option, Usage, UsageError} from 'clipanion';
@@ -75,8 +76,13 @@ export default class RunCommand extends BaseCommand {
     // First we check to see whether a script exist inside the current package
     // for the given name
 
+    const runYarn: RunYarn = (args, context) => {
+      // TODO: make sure env is actually respected, etc.
+      return this.cli.run(args, context);
+    };
+
     if (!this.binariesOnly && await scriptUtils.hasPackageScript(effectiveLocator, this.scriptName, {project}))
-      return await scriptUtils.executePackageScript(effectiveLocator, this.scriptName, this.args, {project, stdin: this.context.stdin, stdout: this.context.stdout, stderr: this.context.stderr});
+      return await scriptUtils.executePackageScript(effectiveLocator, this.scriptName, this.args, {project, stdin: this.context.stdin, stdout: this.context.stdout, stderr: this.context.stderr, runYarn});
 
     // If we can't find it, we then check whether one of the dependencies of the
     // current package exports a binary with the requested name
